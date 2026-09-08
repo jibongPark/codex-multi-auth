@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AccountManager } from "../lib/accounts.js";
 import { isModelAtCapacityError } from "../lib/request/error-classification.js";
 import {
+	normalizeModelCapacityRetryMs,
 	resetPinCacheForTesting,
 	resolveModelCapacityRetryMs,
 	startRuntimeRotationProxy,
@@ -82,15 +83,19 @@ function streamResponse(): Response {
 function scriptedFetch(responses: (() => Response)[]): {
 	fetchImpl: typeof fetch;
 	calls: () => number;
+	authHeaders: () => string[];
 } {
 	let index = 0;
-	const fetchImpl = (async () => {
+	const seenAuth: string[] = [];
+	const fetchImpl = (async (_url: unknown, init?: RequestInit) => {
+		const headers = new Headers(init?.headers ?? {});
+		seenAuth.push(headers.get("authorization") ?? "");
 		const make = responses[Math.min(index, responses.length - 1)];
 		index += 1;
 		if (!make) throw new Error("no scripted response");
 		return make();
 	}) as unknown as typeof fetch;
-	return { fetchImpl, calls: () => index };
+	return { fetchImpl, calls: () => index, authHeaders: () => [...seenAuth] };
 }
 
 async function postResponses(
@@ -203,6 +208,24 @@ describe("resolveModelCapacityRetryMs", () => {
 	);
 });
 
+describe("normalizeModelCapacityRetryMs", () => {
+	// An explicit `modelCapacityRetryMs` option would otherwise bypass the cap
+	// the env var is held to, letting a caller disable the feature with a
+	// negative value or hold a request past the documented one-hour maximum.
+	it.each([
+		[-1, 600_000],
+		[Number.NaN, 600_000],
+		[Number.POSITIVE_INFINITY, 600_000],
+		["600000" as unknown as number, 600_000],
+		[undefined as unknown as number, 600_000],
+		[99_999_999, 3_600_000],
+		[1_234.9, 1_234],
+		[0, 0],
+	])("normalizes %s to %i", (input, expected) => {
+		expect(normalizeModelCapacityRetryMs(input)).toBe(expected);
+	});
+});
+
 describe("runtime proxy waits out a model-capacity response", () => {
 	it.each([429, 503])(
 		"retries the same account after a %i capacity response and succeeds",
@@ -229,6 +252,7 @@ describe("runtime proxy waits out a model-capacity response", () => {
 			});
 			openServers.push(proxy);
 
+			const refundSpy = vi.spyOn(accountManager, "refundToken");
 			const response = await postResponses(proxy);
 
 			expect(response.status).toBe(200);
@@ -237,8 +261,157 @@ describe("runtime proxy waits out a model-capacity response", () => {
 			const account = accountManager.getAccountByIndex(0);
 			expect(account?.rateLimitResetTimes ?? {}).toEqual({});
 			expect(account?.coolingDownUntil).toBeUndefined();
+			// ...and the pool token the attempt debited must come back, or a
+			// sustained capacity event drains healthy accounts until later
+			// requests are refused admission with `token-exhausted`.
+			expect(refundSpy).toHaveBeenCalled();
 		},
 	);
+
+	it("refunds the pool token for every capacity retry, not just the first", async () => {
+		const path = storagePath();
+		const storage = createStorage(2);
+		writeFileSync(path, JSON.stringify(storage), "utf8");
+		setStoragePathDirect(path);
+
+		const accountManager = new AccountManager(undefined, storage);
+		const { fetchImpl, calls } = scriptedFetch([
+			() => capacityResponse(429),
+			() => capacityResponse(503),
+			() => streamResponse(),
+		]);
+		const refundSpy = vi.spyOn(accountManager, "refundToken");
+
+		const proxy = await startRuntimeRotationProxy({
+			accountManager,
+			fetchImpl,
+			upstreamBaseUrl: "https://example.test/backend-api",
+			clientApiKey: CLIENT_API_KEY,
+			modelCapacityRetryMs: 120,
+		});
+		openServers.push(proxy);
+
+		const response = await postResponses(proxy);
+
+		expect(response.status).toBe(200);
+		expect(calls()).toBe(3);
+		expect(refundSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+	});
+
+	it("stops waiting when the client disconnects mid-wait", async () => {
+		// A capacity wait runs for tens of seconds. Re-sending an authenticated
+		// upstream request for a response nobody is reading wastes upstream
+		// capacity and keeps the token in flight longer than necessary.
+		const path = storagePath();
+		const storage = createStorage(1);
+		writeFileSync(path, JSON.stringify(storage), "utf8");
+		setStoragePathDirect(path);
+
+		const accountManager = new AccountManager(undefined, storage);
+		const { fetchImpl, calls } = scriptedFetch([() => capacityResponse(503)]);
+
+		const proxy = await startRuntimeRotationProxy({
+			accountManager,
+			fetchImpl,
+			upstreamBaseUrl: "https://example.test/backend-api",
+			// Long enough that the first 2s backoff step is used in full, so the
+			// abort below lands inside the wait rather than after it.
+			clientApiKey: CLIENT_API_KEY,
+			modelCapacityRetryMs: 30_000,
+		});
+		openServers.push(proxy);
+
+		const controller = new AbortController();
+		const pending = fetch(`${proxy.baseUrl}/responses`, {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${CLIENT_API_KEY}`,
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({ model: "gpt-5.6", input: "hi" }),
+			signal: controller.signal,
+		}).catch(() => undefined);
+
+		await new Promise((resolve) => setTimeout(resolve, 250));
+		controller.abort();
+		await pending;
+		await new Promise((resolve) => setTimeout(resolve, 2_500));
+
+		// The upstream saw exactly the one attempt that produced the capacity
+		// response. No second request was sent after the client went away.
+		expect(calls()).toBe(1);
+	}, 20_000);
+
+	it("uses the backoff table when a capacity 429 carries no retry hint", async () => {
+		// Regression: the 429 branch synthesizes a 60s fallback for ordinary rate
+		// limits. Passing that synthesized value in as an upstream "hint" made
+		// every hint-less capacity 429 wait a full minute and left the
+		// 2s/5s/15s/30s backoff table dead on this path. With a 10s budget the
+		// correct wait is the 2s first step; the bug would clamp 60s to 10s.
+		const path = storagePath();
+		const storage = createStorage(1);
+		writeFileSync(path, JSON.stringify(storage), "utf8");
+		setStoragePathDirect(path);
+
+		const accountManager = new AccountManager(undefined, storage);
+		const { fetchImpl } = scriptedFetch([
+			() => capacityResponse(429),
+			() => streamResponse(),
+		]);
+
+		const proxy = await startRuntimeRotationProxy({
+			accountManager,
+			fetchImpl,
+			upstreamBaseUrl: "https://example.test/backend-api",
+			clientApiKey: CLIENT_API_KEY,
+			modelCapacityRetryMs: 10_000,
+		});
+		openServers.push(proxy);
+
+		const startedAt = Date.now();
+		const response = await postResponses(proxy);
+		const elapsedMs = Date.now() - startedAt;
+
+		expect(response.status).toBe(200);
+		expect(elapsedMs).toBeLessThan(6_000);
+	}, 20_000);
+
+	it("honors an upstream retry hint over the backoff table", async () => {
+		const path = storagePath();
+		const storage = createStorage(1);
+		writeFileSync(path, JSON.stringify(storage), "utf8");
+		setStoragePathDirect(path);
+
+		const accountManager = new AccountManager(undefined, storage);
+		const { fetchImpl } = scriptedFetch([
+			() =>
+				new Response(CAPACITY_BODY, {
+					status: 429,
+					headers: {
+						"content-type": "application/json",
+						"retry-after-ms": "40",
+					},
+				}),
+			() => streamResponse(),
+		]);
+
+		const proxy = await startRuntimeRotationProxy({
+			accountManager,
+			fetchImpl,
+			upstreamBaseUrl: "https://example.test/backend-api",
+			clientApiKey: CLIENT_API_KEY,
+			modelCapacityRetryMs: 10_000,
+		});
+		openServers.push(proxy);
+
+		const startedAt = Date.now();
+		const response = await postResponses(proxy);
+		const elapsedMs = Date.now() - startedAt;
+
+		expect(response.status).toBe(200);
+		// A 40ms hint must beat the 2s first backoff step.
+		expect(elapsedMs).toBeLessThan(1_500);
+	}, 20_000);
 
 	it("gives up once the wall-clock budget is spent", async () => {
 		const path = storagePath();
