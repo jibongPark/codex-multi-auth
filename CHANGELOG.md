@@ -5,6 +5,34 @@ Dates use ISO format (`YYYY-MM-DD`).
 
 This repository's current stable release line is `2.x`. Full release notes live in [`docs/releases/`](docs/releases/) — this file is the short version. Pre-`0.1.0` iteration history is archived in [`docs/releases/legacy-pre-0.1-history.md`](docs/releases/legacy-pre-0.1-history.md).
 
+## [2.14.0] - 2026-09-09
+
+A long-running task no longer dies when the backend reports that the selected model is at capacity: the runtime proxy waits it out and re-sends instead of burning through the account pool. [Full notes](docs/releases/v2.14.0.md).
+
+### Added
+
+- The runtime proxy waits out a "selected model is at capacity" response instead
+  of rotating. There was no handling for this error before: it fell into the
+  generic `status >= 500` branch, which cools the account down and rotates. That
+  is the wrong shape, because capacity is a property of the MODEL rather than of
+  an account, so every account in the pool fails identically, the rotation
+  leaves server-error cooldowns on healthy accounts on the way past, the
+  transient-attempt budget runs out within seconds and the request ends as a
+  pool-exhausted 503. The wait backs off 2s, 5s, 15s, 30s then 60s, an upstream
+  `retry-after` wins when one is sent, and the whole thing stops at a wall-clock
+  deadline that covers the upstream calls too, not just the time asleep. The
+  responding account is left completely unpenalized: its pool token is refunded
+  and it is never marked rate limited or cooled down. A client disconnect during
+  a wait abandons the request rather than sending another upstream call for a
+  response nobody is reading
+  ([#692](https://github.com/ndycode/codex-multi-auth/pull/692), closing
+  [#689](https://github.com/ndycode/codex-multi-auth/issues/689))
+- `CODEX_MULTI_AUTH_MODEL_CAPACITY_RETRY_MS` sets that deadline: 10 minutes by
+  default, 1 hour maximum, `0` to restore the previous rotate-and-fail
+  behaviour. An unparseable value falls back to the default rather than
+  disabling, so a typo cannot silently switch the feature off
+  ([#692](https://github.com/ndycode/codex-multi-auth/pull/692))
+
 ## [2.13.0] - 2026-09-08
 
 A machine-readable quota snapshot, an explicit loopback upstream for the runtime proxy, and a manual `switch` that actually revalidates a rate-limited account. [Full notes](docs/releases/v2.13.0.md).
