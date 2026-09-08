@@ -422,6 +422,44 @@ describe("runtime proxy waits out a model-capacity response", () => {
 		expect(elapsedMs).toBeLessThan(1_500);
 	}, 20_000);
 
+	it("clamps a huge upstream retry hint to the remaining deadline", async () => {
+		// An upstream `retry-after` must never hold a request past the documented
+		// ceiling. Without the clamp this would sleep for ~16 minutes.
+		const path = storagePath();
+		const storage = createStorage(1);
+		writeFileSync(path, JSON.stringify(storage), "utf8");
+		setStoragePathDirect(path);
+
+		const accountManager = new AccountManager(undefined, storage);
+		const { fetchImpl } = scriptedFetch([
+			() =>
+				new Response(CAPACITY_BODY, {
+					status: 429,
+					headers: {
+						"content-type": "application/json",
+						"retry-after-ms": "999999",
+					},
+				}),
+			() => streamResponse(),
+		]);
+
+		const proxy = await startRuntimeRotationProxy({
+			accountManager,
+			fetchImpl,
+			upstreamBaseUrl: "https://example.test/backend-api",
+			clientApiKey: CLIENT_API_KEY,
+			modelCapacityRetryMs: 300,
+		});
+		openServers.push(proxy);
+
+		const startedAt = Date.now();
+		const response = await postResponses(proxy);
+		const elapsedMs = Date.now() - startedAt;
+
+		expect(response.status).toBe(200);
+		expect(elapsedMs).toBeLessThan(3_000);
+	}, 20_000);
+
 	it("gives up once the wall-clock budget is spent", async () => {
 		const path = storagePath();
 		const storage = createStorage(1);
