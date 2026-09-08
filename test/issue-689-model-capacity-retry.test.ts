@@ -228,7 +228,7 @@ describe("normalizeModelCapacityRetryMs", () => {
 
 describe("runtime proxy waits out a model-capacity response", () => {
 	it.each([429, 503])(
-		"retries the same account after a %i capacity response and succeeds",
+		"retries after a %i capacity response and succeeds without penalizing the account",
 		async (status) => {
 			const path = storagePath();
 			const storage = createStorage(2);
@@ -236,7 +236,7 @@ describe("runtime proxy waits out a model-capacity response", () => {
 			setStoragePathDirect(path);
 
 			const accountManager = new AccountManager(undefined, storage);
-			const { fetchImpl, calls } = scriptedFetch([
+			const { fetchImpl, calls, authHeaders } = scriptedFetch([
 				() => capacityResponse(status),
 				() => streamResponse(),
 			]);
@@ -257,6 +257,15 @@ describe("runtime proxy waits out a model-capacity response", () => {
 
 			expect(response.status).toBe(200);
 			expect(calls()).toBe(2);
+			// Both attempts must carry managed credentials. The retry re-enters
+			// normal selection rather than forcing the same account (capacity is
+			// model-wide, so no account is a better bet), but it must never go
+			// upstream unauthenticated.
+			const auth = authHeaders();
+			expect(auth).toHaveLength(2);
+			for (const header of auth) {
+				expect(header).toMatch(/^Bearer .+/i);
+			}
 			// The account is not at fault, so it must not be left rate limited.
 			const account = accountManager.getAccountByIndex(0);
 			expect(account?.rateLimitResetTimes ?? {}).toEqual({});
