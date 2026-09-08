@@ -26,6 +26,12 @@ export interface RotationProxyStateInit {
 	tokenRefreshSkewMs: number;
 	networkErrorCooldownMs: number;
 	serverErrorCooldownMs: number;
+	/**
+	 * Wall-clock ceiling on how long ONE request may wait out a model-capacity
+	 * response before giving up. `0` restores the pre-#689 behaviour of rotating
+	 * the pool and returning the exhaustion 503.
+	 */
+	modelCapacityRetryMs: number;
 	tokenInvalidationCooldownMs: number;
 	minRotationIntervalMs: number;
 	pidOffsetEnabled: boolean;

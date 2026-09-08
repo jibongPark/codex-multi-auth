@@ -51,6 +51,13 @@ export interface RuntimeRotationProxyOptions {
 	 * the value survives the launcher -> detached app-helper process boundary.
 	 */
 	forcedAccountIndex?: number | null;
+	/**
+	 * Wall-clock ceiling on how long ONE request may wait out a
+	 * "selected model is at capacity" response before giving up (issue #689).
+	 * `0` disables the wait entirely. Falls back to
+	 * `CODEX_MULTI_AUTH_MODEL_CAPACITY_RETRY_MS`, then to a 10 minute default.
+	 */
+	modelCapacityRetryMs?: number;
 }
 
 export interface RequestContext {

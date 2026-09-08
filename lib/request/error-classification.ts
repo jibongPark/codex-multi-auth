@@ -297,6 +297,56 @@ export function shouldFallbackToGpt52OnUnsupportedGpt53(
  * @param bodyText - The response body text to inspect for entitlement-related phrases
  * @returns `true` if the combined `code` or `bodyText` indicates an entitlement/subscription issue, `false` otherwise
  */
+/**
+ * Statuses that are never a capacity signal, whatever the body says.
+ *
+ * Auth, payment, entitlement and not-found responses are terminal for this
+ * request and are each handled by their own branch upstream of the capacity
+ * check. Retrying them would spin until the deadline for no reason.
+ */
+const NON_CAPACITY_STATUSES = new Set([401, 402, 403, 404]);
+
+/**
+ * Phrases and codes that mean the model itself is out of capacity right now.
+ *
+ * This is matched on the body TEXT rather than on a status code, because the
+ * status this arrives with is not documented and has been reported differently
+ * by different callers. Matching text the way `isEntitlementError` and
+ * `isWorkspaceDisabledError` already do means a wrong guess about the status
+ * leaves behavior exactly as it is today, rather than breaking a path.
+ *
+ * `at capacity` is deliberately broad. In an OpenAI error body that phrase does
+ * not occur outside capacity pressure, and a false positive costs a bounded
+ * wait and one re-send, not a wrong answer.
+ */
+const MODEL_AT_CAPACITY_PATTERN =
+	/\bat capacity\b|\bmodel_capacity_exceeded\b|\bcapacity_exceeded\b|\bcurrently overloaded\b|\boverloaded_error\b|\bslow_down\b/i;
+
+/**
+ * Detects an upstream response saying the selected model is temporarily out of
+ * capacity, as opposed to the account being rate limited or the server being
+ * broken.
+ *
+ * The distinction matters because the two want opposite handling. A rate limit
+ * is per account, so rotating to another account clears it. Capacity is a
+ * property of the MODEL, so every account in the pool fails identically and
+ * rotating just burns the pool's transient budget in a few seconds, ending the
+ * request as a 503. The caller waits and re-sends on the same account instead.
+ * See issue #689.
+ *
+ * @param status - Upstream HTTP status.
+ * @param bodyText - Upstream error body, already read.
+ * @returns `true` when the request should be waited out rather than rotated.
+ */
+export function isModelAtCapacityError(
+	status: number,
+	bodyText: string,
+): boolean {
+	if (NON_CAPACITY_STATUSES.has(status)) return false;
+	if (!bodyText) return false;
+	return MODEL_AT_CAPACITY_PATTERN.test(bodyText);
+}
+
 export function isEntitlementError(code: string, bodyText: string): boolean {
         const haystack = `${code} ${bodyText}`.toLowerCase();
         // "usage_not_included" means the subscription doesn't include this feature

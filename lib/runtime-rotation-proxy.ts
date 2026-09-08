@@ -54,7 +54,10 @@ import {
 	type RuntimePolicyDecision,
 } from "./policy/runtime-policy.js";
 import { createUsageStreamScanner } from "./usage/usage-extraction.js";
-import { isWorkspaceDisabledError } from "./request/fetch-helpers.js";
+import {
+	isModelAtCapacityError,
+	isWorkspaceDisabledError,
+} from "./request/fetch-helpers.js";
 import {
 	PreemptiveQuotaScheduler,
 	readQuotaSchedulerSnapshot,
@@ -277,6 +280,59 @@ function pinnedRetryBackoffMs(attempt: number): number {
 		PINNED_RETRY_BACKOFF_STEPS_MS.length - 1,
 	);
 	return PINNED_RETRY_BACKOFF_STEPS_MS[index] ?? 0;
+}
+
+/**
+ * Backoff schedule for a model-capacity wait (issue #689).
+ *
+ * Deliberately much longer than `PINNED_RETRY_BACKOFF_STEPS_MS`. That schedule
+ * spaces out re-sends of a request whose account might already be fine;
+ * capacity pressure is upstream and measured in minutes, so re-sending every
+ * 250ms would just be a tight poll against a busy backend. The last step
+ * repeats for every attempt past the table.
+ */
+const CAPACITY_RETRY_BACKOFF_STEPS_MS = [
+	2_000, 5_000, 15_000, 30_000, 60_000,
+] as const;
+
+/**
+ * Default wall-clock ceiling on capacity waiting for ONE request.
+ *
+ * The reporter's case is a long-running task started before stepping away, so
+ * the default has to be long enough to outlast a real capacity blip. It is
+ * still a hard ceiling: the request ends with the normal pool-exhausted 503
+ * rather than hanging forever.
+ */
+const DEFAULT_MODEL_CAPACITY_RETRY_MS = 10 * 60_000;
+const MAX_MODEL_CAPACITY_RETRY_MS = 60 * 60_000;
+const MODEL_CAPACITY_RETRY_ENV = "CODEX_MULTI_AUTH_MODEL_CAPACITY_RETRY_MS";
+
+function capacityRetryBackoffMs(attempt: number): number {
+	const index = Math.min(
+		Math.max(0, attempt - 1),
+		CAPACITY_RETRY_BACKOFF_STEPS_MS.length - 1,
+	);
+	return CAPACITY_RETRY_BACKOFF_STEPS_MS[index] ?? 0;
+}
+
+/**
+ * Total time one request may spend waiting out model capacity.
+ *
+ * `0` disables the behaviour entirely and restores the pre-#689 handling, where
+ * a capacity response rotates the pool and 503s. Anything unparseable falls
+ * back to the default rather than disabling, so a typo does not silently turn
+ * the feature off.
+ */
+export function resolveModelCapacityRetryMs(
+	env: NodeJS.ProcessEnv = process.env,
+): number {
+	const raw = (env[MODEL_CAPACITY_RETRY_ENV] ?? "").trim();
+	if (!raw) return DEFAULT_MODEL_CAPACITY_RETRY_MS;
+	const parsed = Number(raw);
+	if (!Number.isFinite(parsed) || parsed < 0) {
+		return DEFAULT_MODEL_CAPACITY_RETRY_MS;
+	}
+	return Math.min(Math.floor(parsed), MAX_MODEL_CAPACITY_RETRY_MS);
 }
 
 const MAX_REQUEST_BODY_BYTES = 64 * 1024 * 1024;
@@ -847,6 +903,8 @@ export async function startRuntimeRotationProxy(
 	const tokenRefreshSkewMs = getTokenRefreshSkewMs(pluginConfig);
 	const networkErrorCooldownMs = getNetworkErrorCooldownMs(pluginConfig);
 	const serverErrorCooldownMs = getServerErrorCooldownMs(pluginConfig);
+	const modelCapacityRetryMs =
+		options.modelCapacityRetryMs ?? resolveModelCapacityRetryMs();
 	const tokenInvalidationCooldownMs = getTokenInvalidationCooldownMs(pluginConfig);
 	const minRotationIntervalMs = getMinRotationIntervalMs(pluginConfig);
 	const pidOffsetEnabled = getPidOffsetEnabled(pluginConfig);
@@ -900,6 +958,7 @@ export async function startRuntimeRotationProxy(
 		tokenRefreshSkewMs,
 		networkErrorCooldownMs,
 		serverErrorCooldownMs,
+		modelCapacityRetryMs,
 		tokenInvalidationCooldownMs,
 		minRotationIntervalMs,
 		pidOffsetEnabled,
@@ -1151,6 +1210,13 @@ async function handleRequestInner(
 		);
 		let transientAttempts = 0;
 		let transientExhaustionReason: ExhaustionReason | null = null;
+		// Capacity waits are counted separately from `transientAttempts` and from
+		// the pinned selection cap. Both of those bound how many DIFFERENT
+		// accounts or re-sends a failing request may burn; a capacity wait is not
+		// a failure of any account, it is the same request pausing for an
+		// upstream that is busy, and it has its own wall-clock ceiling. See #689.
+		let capacityRetries = 0;
+		let capacityWaitedMs = 0;
 		const accountSkipReasons = new Map<number, string>();
 		let reloadedAfterNoAccount = false;
 
@@ -1233,12 +1299,63 @@ async function handleRequestInner(
 			);
 		}
 
+		/**
+		 * Wait out a "selected model is at capacity" response, then let the loop
+		 * re-send the same request (issue #689).
+		 *
+		 * Capacity is a property of the MODEL, not of an account, so the normal
+		 * handling is actively wrong for it: rotating spends the pool's transient
+		 * budget against accounts that will all fail identically, and the request
+		 * ends as a pool-exhausted 503 within seconds. That is what kills a
+		 * long-running task started before the user stepped away.
+		 *
+		 * @param retryAfterMs Upstream hint, when it gave one; otherwise a backoff
+		 * step is used.
+		 * @param accountIndex Account that just saw the capacity response.
+		 * @returns `true` when the caller should `continue` and re-send, `false`
+		 * when the budget is spent or disabled and normal handling should run.
+		 */
+		const waitOutModelCapacity = async (
+			retryAfterMs: number | null,
+			accountIndex: number,
+		): Promise<boolean> => {
+			const budgetMs = state.modelCapacityRetryMs;
+			if (!Number.isFinite(budgetMs) || budgetMs <= 0) return false;
+			const remainingMs = budgetMs - capacityWaitedMs;
+			if (remainingMs <= 0) return false;
+			const hinted =
+				retryAfterMs !== null &&
+				Number.isFinite(retryAfterMs) &&
+				retryAfterMs > 0
+					? retryAfterMs
+					: capacityRetryBackoffMs(capacityRetries + 1);
+			const waitMs = Math.min(Math.max(0, Math.floor(hinted)), remainingMs);
+			if (waitMs <= 0) return false;
+			capacityRetries += 1;
+			capacityWaitedMs += waitMs;
+			state.status.retries += 1;
+			proxyLog.warn("model at capacity; waiting before re-sending", {
+				traceId,
+				waitMs,
+				attempt: capacityRetries,
+				waitedMs: capacityWaitedMs,
+				budgetMs,
+			});
+			// The account did nothing wrong, so it must stay selectable. Without
+			// this an unpinned request rotates away from a healthy account and
+			// exhausts the pool on an outage that affects every account equally.
+			attemptedIndexes.delete(accountIndex);
+			await sleep(waitMs);
+			return true;
+		};
+
 		let runtimeSelectionIterations = 0;
 		while (
 			(isPinned || attemptedIndexes.size < accountCount) &&
 			transientAttempts < transientAttemptLimit &&
 			(!isPinned ||
-				runtimeSelectionIterations < MAX_PINNED_SELECTION_ITERATIONS)
+				runtimeSelectionIterations - capacityRetries <
+					MAX_PINNED_SELECTION_ITERATIONS)
 		) {
 			// Space out same-account re-sends. The loop has no other delay in it,
 			// and the pinned retry deliberately waives the account's own cooldown
@@ -1562,6 +1679,18 @@ async function handleRequestInner(
 					60_000;
 				// Reading the body awaited I/O; a switch may have landed meanwhile.
 				reconcileManualSelection();
+				// A capacity 429 is not this account's quota. Marking it rate
+				// limited would take a healthy account out of the pool for the
+				// retry-after window on an outage that affects every account.
+				if (
+					isModelAtCapacityError(upstream.status, bodyText) &&
+					(await waitOutModelCapacity(
+						retryAfterMs,
+						refreshed.account.index,
+					))
+				) {
+					continue;
+				}
 				state.preemptiveQuotaScheduler.markRateLimited(
 					quotaScheduleKey,
 					retryAfterMs,
@@ -1733,7 +1862,21 @@ async function handleRequestInner(
 			}
 
 			if (upstream.status >= 500) {
-				await readErrorBody(upstream, state.streamStallTimeoutMs);
+				const bodyText = await readErrorBody(
+					upstream,
+					state.streamStallTimeoutMs,
+				);
+				// A capacity 5xx is upstream load, not a broken account, so it
+				// must not cool the account down or count against the pool.
+				if (
+					isModelAtCapacityError(upstream.status, bodyText) &&
+					(await waitOutModelCapacity(
+						parseRetryAfterHeaderMs(upstream.headers, state.now()),
+						refreshed.account.index,
+					))
+				) {
+					continue;
+				}
 				refundConsumedPoolToken(refreshed.account);
 				accountManager.recordFailure(refreshed.account, context.family, context.model);
 				accountManager.markAccountCoolingDown(

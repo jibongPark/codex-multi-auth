@@ -42,6 +42,7 @@ export {
 	resolveUnsupportedCodexFallbackModel,
 	shouldFallbackToGpt52OnUnsupportedGpt53,
 	isEntitlementError,
+	isModelAtCapacityError,
 	isWorkspaceDisabledError,
 	createEntitlementErrorResponse,
 } from "./error-classification.js";
