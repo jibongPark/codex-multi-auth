@@ -129,6 +129,55 @@ fail with exit code 1 without reading account storage or quota cache.
 
 ---
 
+## `codex-multi-auth menubar`
+
+Manage the optional native quota companion on macOS 13 or later. Installation
+requires Xcode Command Line Tools (`xcode-select --install`) and Swift 5.9 or newer.
+The installed `codex-multi-auth` executable must be available on `PATH`.
+
+```console
+codex-multi-auth menubar install
+codex-multi-auth menubar status
+codex-multi-auth menubar uninstall
+```
+
+- `install` builds the bundled Swift source in release mode, creates and locally
+  signs `~/Applications/Codex Multi Auth Quota.app`, writes
+  `~/Library/LaunchAgents/com.ndycode.codex-multi-auth-quota.plist`, and launches it.
+  The LaunchAgent starts the app at login and preserves the installation shell's
+  executable search path. Re-run install after moving the CLI or its Node runtime.
+- `status` reports the presence of the app and LaunchAgent. It does not check
+  process health or quota freshness.
+- `uninstall` unloads the LaunchAgent and removes only that plist and companion
+  bundle. Accounts, quota cache, CLI installation, and the official Codex app and
+  its configuration are preserved. Quitting the app from its menu closes it for
+  the current session; uninstall removes login launch too.
+
+The app displays masked account labels, a configured-current marker, remaining
+quota percentages, and reset countdowns. It calls `codex-multi-auth limits --json`
+on startup and every 60 seconds for cached reads without network requests.
+The **새로고침** button performs a manual refresh through
+`codex-multi-auth limits --json --refresh`, with the same enabled-account checks
+and five-minute freshness floor as the CLI. Countdown updates do not imply a
+fresh provider quota reading. On errors, the last successful snapshot remains
+visible with an error message.
+
+The companion receives only the quota JSON contract, including already-masked
+labels; it does not open credential files, receive OAuth tokens, or display raw
+account emails. Its current-account indicator follows `selection.routedIndex`,
+not the live runtime selection described by `why-selected`. Account management
+remains in the CLI, available through **Codex Multi Auth 열기** in the popover.
+
+The login agent records `PATH`, not arbitrary shell environment overrides such
+as `CODEX_MULTI_AUTH_DIR`; a custom account root needs an explicitly configured
+launch environment. See [storage paths](storage-paths.md#macos-menu-bar-companion).
+
+`--help` / `-h` prints focused usage. Other platforms and unsupported arguments
+return exit code 1. Build, signing, or launch failures also return 1; inspect
+`menubar status` for any files created before the failure.
+
+---
+
 ## Daily Use
 
 | Command | Description |

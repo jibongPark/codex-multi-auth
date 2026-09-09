@@ -170,6 +170,32 @@ The app bind writes a provider entry to the real `~/.codex/config.toml` only aft
 
 ---
 
+## macOS Menu Bar Companion
+
+`codex-multi-auth menubar install` manages two paths under the current user's home:
+
+| Path | Purpose |
+| --- | --- |
+| `~/Applications/Codex Multi Auth Quota.app` | Locally built and signed native quota app; executable at `Contents/MacOS/CodexMultiAuthQuota` and bundle metadata at `Contents/Info.plist` |
+| `~/Library/LaunchAgents/com.ndycode.codex-multi-auth-quota.plist` | User login launch registration and executable search path |
+
+The Swift release build is generated under `apps/macos-menubar/.build/` inside
+the installed package. Build products are local and excluded from distribution.
+`CODEX_MULTI_AUTH_DIR` does not relocate the companion app or LaunchAgent, and the
+installer does not copy this override into the login agent's environment.
+
+The companion keeps its last quota snapshot in memory and consumes masked labels
+from `codex-multi-auth limits --json`; it does not read credential files directly.
+Cached reads occur every 60 seconds. Manual refresh uses `limits --json --refresh`
+and can update the CLI-owned quota cache under the configured multi-auth root.
+
+`codex-multi-auth menubar uninstall` stops the login agent and removes only the
+two managed paths above. It preserves `~/.codex/multi-auth/`, saved accounts,
+quota cache, official Codex state under `~/.codex/`, and the official Codex app.
+No account-data migration or removal is part of companion installation or removal.
+
+---
+
 ## Local Governance and Bridge Paths
 
 | Path | Purpose |

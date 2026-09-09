@@ -222,6 +222,21 @@ function compareSemverDescending(left: string, right: string): number {
 }
 
 describe("Documentation Integrity", () => {
+	it("documents every menu bar command and manual quota refresh", () => {
+		const readme = readFileSync(join(projectRoot, "README.md"), "utf8");
+		const commands = readFileSync(
+			join(projectRoot, "docs/reference/commands.md"),
+			"utf8",
+		);
+		for (const action of ["install", "status", "uninstall"]) {
+			expect(readme).toContain(`codex-multi-auth menubar ${action}`);
+			expect(commands).toContain(`codex-multi-auth menubar ${action}`);
+		}
+		const menubarSection = commands.split("## `codex-multi-auth menubar`")[1]?.split("\n## ")[0];
+		expect(menubarSection).toContain("manual");
+		expect(menubarSection).toContain("limits --json --refresh");
+	});
+
 	it("has all required user docs and release notes", () => {
 		for (const docPath of getUserDocs()) {
 			const fullPath = join(projectRoot, docPath);
@@ -442,7 +457,7 @@ describe("Documentation Integrity", () => {
 
 	it("keeps compatibility command aliases scoped to reference, troubleshooting, or migration docs", () => {
 		const files = ["README.md", ...getUserDocs()];
-		const aliasPattern = /\bcodex (multi auth|multi-auth|multiauth)\b/i;
+		const aliasPattern = /\bcodex (multi auth|multi-auth|multiauth)\b(?! Quota\.app)/i;
 
 		for (const filePath of files) {
 			const content = read(filePath);

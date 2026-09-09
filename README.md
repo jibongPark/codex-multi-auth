@@ -233,6 +233,40 @@ which would rebind the row to a different workspace.
 
 ---
 
+## macOS Menu Bar Quota Dashboard
+
+On macOS 13 or later, the optional native menu bar companion shows the configured
+current account, masked account labels, remaining quota, and reset countdowns.
+Install Xcode Command Line Tools (`xcode-select --install`) with Swift 5.9 or newer,
+and make this package's `codex-multi-auth` executable available on your `PATH`.
+
+```bash
+codex-multi-auth menubar install
+codex-multi-auth menubar status
+codex-multi-auth menubar uninstall
+```
+
+Installation builds the Swift app locally, launches it, and registers login launch.
+The app lives at `~/Applications/Codex Multi Auth Quota.app`; its LaunchAgent is
+`~/Library/LaunchAgents/com.ndycode.codex-multi-auth-quota.plist`.
+Status reports whether those two paths exist.
+
+The dashboard reads `codex-multi-auth limits --json` on startup and every 60 seconds.
+These cached reads make no network requests. Use the **새로고침** button for manual
+refresh (`codex-multi-auth limits --json --refresh`); it retains the CLI's
+five-minute freshness floor. A failed refresh preserves the last displayed values
+and shows an error, so those values may be stale.
+
+The companion consumes only the quota JSON contract with masked labels. It does
+not read account credential files, receive tokens, or display unmasked emails.
+The current marker reflects configured routing, which can differ from the account
+selected for a live request. Account switching and login remain in the CLI.
+Uninstall stops the companion and removes only its app bundle and LaunchAgent;
+saved accounts, quota cache, and the official Codex app remain intact.
+See [menu bar commands](docs/reference/commands.md#codex-multi-auth-menubar) for details.
+
+---
+
 ## Dashboard Hotkeys
 
 ### Main dashboard
