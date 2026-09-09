@@ -21,10 +21,10 @@ describe("codex routing helpers", () => {
 		expect(shouldHandleMultiAuthAuth(["status"])).toBe(false);
 	});
 
-	it("routes the newer auth subcommands (unpin, workspace, limits, uninstall) locally", () => {
+	it("routes the newer auth subcommands (unpin, workspace, limits, uninstall, reset) locally", () => {
 		// cli-manager-01/02: guard against accidental forwarding regressions for the
 		// subcommands added after the original wrapper list was written.
-		for (const subcommand of ["unpin", "workspace", "limits", "uninstall"]) {
+		for (const subcommand of ["unpin", "workspace", "limits", "uninstall", "reset"]) {
 			expect(AUTH_SUBCOMMANDS.has(subcommand), subcommand).toBe(true);
 			expect(shouldHandleMultiAuthAuth(["auth", subcommand]), subcommand).toBe(true);
 		}

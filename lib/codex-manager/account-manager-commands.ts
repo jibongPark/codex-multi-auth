@@ -41,4 +41,5 @@ export const ACCOUNT_MANAGER_COMMANDS = new Set([
 	"config",
 	"init-config",
 	"debug",
+	"reset",
 ]);
