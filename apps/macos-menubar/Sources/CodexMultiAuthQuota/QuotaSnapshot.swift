@@ -51,7 +51,7 @@ public struct QuotaWindow: Decodable, Equatable {
 
     public func display(now: Date) -> QuotaWindowDisplay {
         let remainingPercent = usedPercent.map {
-            min(100, max(0, Int((100 - $0).rounded())))
+            Int(min(100, max(0, (100 - $0).rounded())))
         }
         let resetText = resetAtMs.map { resetAtMs in
             let seconds = max(0, Int((Double(resetAtMs) / 1_000 - now.timeIntervalSince1970).rounded(.down)))

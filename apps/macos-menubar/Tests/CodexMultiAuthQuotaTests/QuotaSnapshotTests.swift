@@ -118,6 +118,14 @@ func clampsRemainingPercentage() {
         .display(now: .now).remainingPercent == 0)
 }
 
+@Test("clamps extreme finite usage without overflowing integer conversion")
+func clampsExtremeFiniteUsage() {
+    let display = QuotaWindow(usedPercent: 1e300, windowMinutes: 300, resetAtMs: nil)
+        .display(now: .now)
+
+    #expect(display.remainingPercent == 0)
+}
+
 @Test("formats the reset countdown from the supplied millisecond timestamp")
 func formatsResetCountdown() {
     let now = Date(timeIntervalSince1970: 1_000)
