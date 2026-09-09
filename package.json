@@ -118,7 +118,8 @@
 		"mcodex": "scripts/mcodex.js",
 		"codex-multi-auth-codex": "scripts/codex.js",
 		"codex-multi-auth-app-launcher": "scripts/codex-app-launcher.js",
-		"codex-multi-auth": "scripts/codex-multi-auth.js"
+		"codex-multi-auth": "scripts/codex-multi-auth.js",
+		"codex-reset": "scripts/codex-reset.js"
 	},
 	"files": [
 		".codex-plugin/plugin.json",
@@ -130,6 +131,7 @@
 		"scripts/codex-app-router.js",
 		"scripts/codex-bin-resolver.js",
 		"scripts/codex-multi-auth.js",
+		"scripts/codex-reset.js",
 		"scripts/codex-routing.js",
 		"scripts/mcodex.js",
 		"scripts/install-codex-auth-utils.js",

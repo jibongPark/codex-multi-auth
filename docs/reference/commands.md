@@ -6,7 +6,7 @@ Complete command, flag, and hotkey reference for `codex-multi-auth` (package `2.
 
 ## Published binaries
 
-The package ships four `bin` entrypoints:
+The package ships five `bin` entrypoints:
 
 | Binary | Role |
 | --- | --- |
@@ -14,6 +14,7 @@ The package ships four `bin` entrypoints:
 | `codex-multi-auth-codex` | Forwarding wrapper: handles `auth ...` locally; forwards every other command to the official `@openai/codex` CLI, with optional runtime rotation and `--account` pinning |
 | `codex-multi-auth-app-launcher` | User-level packaged Codex app launcher routing helper (Windows shortcuts, macOS wrapper app, Linux `.desktop`) |
 | `mcodex` | Convenience launcher over `codex-multi-auth-codex` with optional `--monitor` and `--tmux` modes |
+| `codex-reset` | Inspect or consume a managed account's Codex rate-limit reset ticket |
 
 See also [public-api.md](public-api.md) for Tier A surface and stability.
 
@@ -140,6 +141,32 @@ fail with exit code 1 without reading account storage or quota cache.
 | `codex-multi-auth best` | Pick and optionally sync the best account (clears any manual pin) |
 | `codex-multi-auth account ...` | Manage local account policy metadata |
 | `codex-multi-auth workspace <account> [workspace]` | List an account's tracked workspaces, or set its active workspace |
+
+---
+
+## `codex-reset`
+
+Lists or consumes Codex rate-limit reset tickets for one managed account. It uses the same
+saved account pool as `codex-multi-auth`; it does not patch the Codex desktop app.
+
+```bash
+codex-reset
+codex-reset account=2
+codex-reset action=consume account=2 confirm=true
+codex-reset action=consume account=2 creditId=RateLimitResetCredit_1 confirm=true
+codex-reset action=consume account=2 dryRun=true format=json
+```
+
+All inputs use `key=value`: `action=status|consume` (default `status`), `account` (optional
+1-based index; default active account), `creditId`, `confirm=true|false`,
+`dryRun=true|false`, `format=text|json`, and `includeSensitive=true|false`.
+
+`consume` is preview-only until `confirm=true`; `dryRun=true` is always preview-only. Without
+`creditId`, the command selects the available ticket with the **earliest valid expiry**. Equal
+expiry times are ordered by ticket ID; a missing or unreadable expiry is considered last but can
+still be used if it is the only available ticket. A confirmed successful redemption clears only
+that account's locally stored rate-limit/cooldown state; restart a running runtime proxy or the
+Codex app if it has already retained old state in memory.
 
 > Sticky session affinity: `switch`, `unpin`, and `best` all bump an
 > `affinityGeneration` counter in storage that the runtime rotation proxy

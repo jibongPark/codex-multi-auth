@@ -90,6 +90,7 @@ import { runHistoryCommand } from "./codex-manager/commands/history.js";
 import { runUnpinCommand } from "./codex-manager/commands/unpin.js";
 import { runWorkspaceCommand } from "./codex-manager/commands/workspace.js";
 import { runUsageCommand } from "./codex-manager/commands/usage.js";
+import { runResetCommand } from "./codex-manager/commands/reset.js";
 import { refreshQuotaCacheForMenu } from "./codex-manager/login-menu-data.js";
 import { printUsage } from "./codex-manager/help.js";
 import {
@@ -619,6 +620,7 @@ const CLI_COMMAND_HANDLERS: ReadonlyMap<string, CliCommandHandler> = new Map<
 			}),
 	],
 	["usage", (rest) => runUsageCommand(rest)],
+	["reset", (rest) => runResetCommand(rest)],
 	[
 		"rotation",
 		(rest) =>
