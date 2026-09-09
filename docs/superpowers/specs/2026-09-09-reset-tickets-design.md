@@ -8,23 +8,29 @@ same account pool that powers Codex CLI and desktop-app routing.
 
 ## Scope
 
-The fork adds one short root command family to `codex-multi-auth`:
+The fork adds the short standalone `codex-reset` command. It is backed by the
+same manager dispatcher as `codex-multi-auth reset`, so both surfaces have
+identical behavior while daily use stays concise:
 
 ```console
-codex-multi-auth reset
-codex-multi-auth reset <account>
-codex-multi-auth reset <account> use --confirm
-codex-multi-auth reset <account> use --confirm --ticket <ticket-id>
+codex-reset
+codex-reset <account>
+codex-reset <account> use --confirm
+codex-reset <account> use --confirm --ticket <ticket-id>
 ```
 
-- `reset` lists every stored account, including disabled accounts, and its
+- `codex-reset` lists every stored account, including disabled accounts, and its
   current ticket availability.
-- `reset <account>` lists tickets only for that one account.
+- `codex-reset <account>` lists tickets only for that one account.
 - `<account>` is a required 1-based storage index for `use`, matching the
   existing `rotation reset-rate-limits --account <idx>` convention.
 - `use` performs no write without the exact `--confirm` flag. When no
-  `--ticket` is supplied it selects the first server-reported available
-  ticket. `--ticket` must name a currently available ticket for that account.
+  `--ticket` is supplied it automatically selects the server-reported
+  available ticket with the earliest valid `expires_at`. Equal expiry times
+  use the ticket id as a deterministic tie-breaker. Tickets with no readable
+  expiry sort after every ticket with a valid expiry, but remain eligible if
+  they are the only available tickets. `--ticket` must name a currently
+  available ticket for that account and explicitly overrides auto-selection.
 - `--json` is available for both read and consume paths. It never contains
   OAuth tokens, refresh tokens, or raw email addresses.
 
@@ -36,11 +42,12 @@ existing `CODEX_BASE_URL`, `createCodexHeaders`, error sanitization, timeout
 rules, and a deterministic per-ticket idempotency key. The request layer does
 not log tokens or server bodies.
 
-Add `lib/codex-manager/commands/reset.ts` as the only CLI orchestration layer.
-It resolves and refreshes the selected stored account through the existing
-refresh queue, persists a rotated refresh token through the account storage
-transaction, and calls the lower-layer ticket client. It will not alter the
-official Codex app binaries or OpenCode configuration.
+Add `lib/codex-manager/commands/reset.ts` as the only CLI orchestration layer,
+then expose it through a small `scripts/codex-reset.js` package-bin wrapper.
+The command resolves and refreshes the selected stored account through the
+existing refresh queue, persists a rotated refresh token through the account
+storage transaction, and calls the lower-layer ticket client. It will not
+alter the official Codex app binaries or OpenCode configuration.
 
 On a confirmed successful consume, the command clears only the target
 account's active `rateLimitResetTimes`, `coolingDownUntil`, and
@@ -66,12 +73,14 @@ user to restart the app if a running runtime proxy retains an in-memory timer.
 
 ## Verification
 
-Vitest coverage will exercise payload normalization, unavailable-ticket and
-unknown-ticket rejection, safe error-body redaction, stable idempotency keys,
-account index parsing, token refresh persistence, list-all/list-one JSON
-contracts, explicit-confirm consumption, and post-consumption local
-rate-limit/cache invalidation. The focused suite, full test suite, typecheck,
-lint, and build must pass before the fork branch is pushed.
+Vitest coverage will exercise payload normalization, expiry-first automatic
+ticket selection (including same-expiry and missing-expiry fallbacks),
+unavailable-ticket and unknown-ticket rejection, safe error-body redaction,
+stable idempotency keys, account index parsing, token refresh persistence,
+list-all/list-one JSON contracts, explicit-confirm consumption, package-bin
+routing, and post-consumption local rate-limit/cache invalidation. The focused
+suite, full test suite, typecheck, lint, and build must pass before the fork
+branch is pushed.
 
 ## Non-goals
 
