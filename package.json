@@ -124,6 +124,7 @@
 		".codex-plugin/plugin.json",
 		"dist/",
 		"assets/",
+		"apps/macos-menubar/",
 		"config/",
 		"scripts/codex.js",
 		"scripts/codex-app-launcher.js",

@@ -17,6 +17,7 @@ const AUTH_SUBCOMMANDS = new Set([
 	"fix",
 	"doctor",
 	"uninstall",
+	"menubar",
 	"account",
 	"budget",
 	"bridge",

@@ -29,6 +29,7 @@ export const ACCOUNT_MANAGER_COMMANDS = new Set([
 	"fix",
 	"doctor",
 	"uninstall",
+	"menubar",
 	"account",
 	"budget",
 	"bridge",

@@ -76,6 +76,7 @@ import {
 	runVerifyFlagged as runRepairVerifyFlagged,
 } from "./codex-manager/repair-commands.js";
 import { runUninstallCommand } from "./codex-manager/commands/uninstall.js";
+import { runMenubarCommand } from "./codex-manager/commands/menubar.js";
 import { runForecastCommand } from "./codex-manager/commands/forecast.js";
 import { runInitConfigCommand } from "./codex-manager/commands/init-config.js";
 import { runReportCommand } from "./codex-manager/commands/report.js";
@@ -688,6 +689,7 @@ const CLI_COMMAND_HANDLERS: ReadonlyMap<string, CliCommandHandler> = new Map<
 	["fix", (rest) => runRepairFix(rest, createRepairCommandDeps())],
 	["doctor", (rest) => runRepairDoctor(rest, createRepairCommandDeps())],
 	["uninstall", (rest) => runUninstallCommand(rest, { clearAccounts })],
+	["menubar", (rest) => runMenubarCommand(rest)],
 	[
 		"config",
 		(rest) => {
@@ -726,6 +728,10 @@ const CLI_COMMAND_HANDLERS: ReadonlyMap<string, CliCommandHandler> = new Map<
 ]);
 
 export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
+	// Companion management must not initialize account storage or app routing.
+	if (rawArgs[0] === "menubar" || (rawArgs[0] === "auth" && rawArgs[1] === "menubar")) {
+		return runMenubarCommand(rawArgs.slice(rawArgs[0] === "auth" ? 2 : 1));
+	}
 	// Lazy install setup (audit roadmap §4.5.4): app detection, Codex app bind,
 	// and launcher routing moved out of npm postinstall to the first CLI run.
 	// ensureFirstRunSetup never throws; the catch is belt-and-braces so no
