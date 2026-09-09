@@ -5,10 +5,10 @@ let package = Package(
     name: "CodexMultiAuthQuota",
     platforms: [.macOS(.v13)],
     products: [
-        .library(name: "CodexMultiAuthQuota", targets: ["CodexMultiAuthQuota"]),
+        .executable(name: "CodexMultiAuthQuota", targets: ["CodexMultiAuthQuota"]),
     ],
     targets: [
-        .target(name: "CodexMultiAuthQuota"),
+        .executableTarget(name: "CodexMultiAuthQuota"),
         .testTarget(
             name: "CodexMultiAuthQuotaTests",
             dependencies: ["CodexMultiAuthQuota"]
