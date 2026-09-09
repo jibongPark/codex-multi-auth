@@ -8,31 +8,32 @@ same account pool that powers Codex CLI and desktop-app routing.
 
 ## Scope
 
-The fork adds the short standalone `codex-reset` command. It is backed by the
-same manager dispatcher as `codex-multi-auth reset`, so both surfaces have
-identical behavior while daily use stays concise:
+The fork adds the short standalone `codex-reset` command. Its options and
+results mirror the `codex-reset` tool contract in `oc-codex-multi-auth`, while
+using this package's Codex CLI and desktop-app account storage:
 
 ```console
 codex-reset
-codex-reset <account>
-codex-reset <account> use --confirm
-codex-reset <account> use --confirm --ticket <ticket-id>
+codex-reset account=2
+codex-reset action=consume account=2 confirm=true
+codex-reset action=consume account=2 creditId=RateLimitResetCredit_1 confirm=true
+codex-reset action=consume account=2 dryRun=true format=json
 ```
 
-- `codex-reset` lists every stored account, including disabled accounts, and its
-  current ticket availability.
-- `codex-reset <account>` lists tickets only for that one account.
-- `<account>` is a required 1-based storage index for `use`, matching the
-  existing `rotation reset-rate-limits --account <idx>` convention.
-- `use` performs no write without the exact `--confirm` flag. When no
-  `--ticket` is supplied it automatically selects the server-reported
-  available ticket with the earliest valid `expires_at`. Equal expiry times
-  use the ticket id as a deterministic tie-breaker. Tickets with no readable
-  expiry sort after every ticket with a valid expiry, but remain eligible if
-  they are the only available tickets. `--ticket` must name a currently
-  available ticket for that account and explicitly overrides auto-selection.
-- `--json` is available for both read and consume paths. It never contains
-  OAuth tokens, refresh tokens, or raw email addresses.
+- `action=status` is the default. It lists the target account's tickets and
+  current usage in parallel. With no `account`, the active Codex account is
+  the target; `account` is an optional 1-based account number.
+- `action=consume` makes no write unless `confirm=true`; it is a preview when
+  confirmation is absent. `dryRun=true` always remains a preview, even with
+  `confirm=true`.
+- `creditId` optionally selects one available ticket. Without it, consumption
+  selects the available ticket with the earliest valid `expires_at`. Equal
+  expiry times use the ticket id as a deterministic tie-breaker. Tickets with
+  unreadable expiry sort after tickets with valid expiry but remain eligible
+  when no valid expiry is available.
+- `format=text|json` defaults to text. `includeSensitive=true` only changes
+  account identity fields in JSON output; no output ever contains OAuth or
+  refresh tokens.
 
 ## Architecture
 
@@ -42,12 +43,14 @@ existing `CODEX_BASE_URL`, `createCodexHeaders`, error sanitization, timeout
 rules, and a deterministic per-ticket idempotency key. The request layer does
 not log tokens or server bodies.
 
-Add `lib/codex-manager/commands/reset.ts` as the only CLI orchestration layer,
-then expose it through a small `scripts/codex-reset.js` package-bin wrapper.
-The command resolves and refreshes the selected stored account through the
-existing refresh queue, persists a rotated refresh token through the account
-storage transaction, and calls the lower-layer ticket client. It will not
-alter the official Codex app binaries or OpenCode configuration.
+Add `lib/codex-manager/commands/reset.ts` as the CLI orchestration layer, then
+expose it through a small `scripts/codex-reset.js` package-bin wrapper. The
+wrapper accepts the OpenCode-style `key=value` arguments above and translates
+them to the command parser without accepting unknown keys. The command resolves
+and refreshes the selected stored account through the existing refresh queue,
+persists a rotated refresh token through the account storage transaction, and
+calls the lower-layer ticket client. It will not alter official Codex app
+binaries or OpenCode configuration.
 
 On a confirmed successful consume, the command clears only the target
 account's active `rateLimitResetTimes`, `coolingDownUntil`, and
@@ -76,11 +79,14 @@ user to restart the app if a running runtime proxy retains an in-memory timer.
 Vitest coverage will exercise payload normalization, expiry-first automatic
 ticket selection (including same-expiry and missing-expiry fallbacks),
 unavailable-ticket and unknown-ticket rejection, safe error-body redaction,
-stable idempotency keys, account index parsing, token refresh persistence,
-list-all/list-one JSON contracts, explicit-confirm consumption, package-bin
-routing, and post-consumption local rate-limit/cache invalidation. The focused
-suite, full test suite, typecheck, lint, and build must pass before the fork
-branch is pushed.
+stable idempotency keys, active/default and explicit 1-based account
+resolution, status's parallel ticket-and-usage reads, token refresh
+persistence, preview/confirmed/dry-run consumption, successful consume with
+usage reread failure, unknown consume outcome, text/JSON contracts,
+OpenCode-style argument parsing in the package-bin wrapper, and
+post-consumption local rate-limit/cache invalidation. The focused suite, full
+test suite, typecheck, lint, and build must pass before the fork branch is
+pushed.
 
 ## Non-goals
 
