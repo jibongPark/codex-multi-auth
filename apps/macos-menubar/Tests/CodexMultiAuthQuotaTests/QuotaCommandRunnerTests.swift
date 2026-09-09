@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import CodexMultiAuthQuota
@@ -63,6 +64,21 @@ private actor SuspendedExecutor: QuotaCommandExecuting {
 }
 
 @MainActor
+@Test("Terminal AppleScript failure is sanitized and a successful retry clears it")
+func terminalFailureIsSanitized() {
+    let model = QuotaDashboardModel()
+    model.openCodexMultiAuth {
+        try executeTerminalScript(NSAppleScript(source: "error \"token-like-secret\" number -1743"))
+    }
+    #expect(model.terminalErrorMessage == "Terminal을 열지 못했습니다. 시스템 설정의 자동화 권한을 확인한 뒤 다시 시도해 주세요.")
+    #expect(model.terminalErrorMessage?.contains("token-like-secret") == false)
+    model.openCodexMultiAuth {
+        try executeTerminalScript(NSAppleScript(source: "return 1"))
+    }
+    #expect(model.terminalErrorMessage == nil)
+}
+
+@MainActor
 @Test("cached update never adds the provider refresh flag")
 func cachedUpdateUsesSafeLimitsCommand() async {
     let executor = RecordingExecutor(result: .success(validSnapshotData))
@@ -93,6 +109,58 @@ func refreshRetainsLastSnapshot() async {
 }
 
 @MainActor
+@Test("malformed JSON and unsupported schema retain the last successful snapshot", arguments: [
+    "token-like-secret is not JSON",
+    #"{"schemaVersion":2,"accounts":[]}"#,
+])
+func invalidSnapshotRetainsLastSnapshot(invalidJSON: String) async {
+    let executor = RecordingExecutor(results: [.success(validSnapshotData), .success(Data(invalidJSON.utf8))])
+    let model = QuotaDashboardModel(executor: executor)
+    await model.loadCached()
+    let previousAccounts = model.accounts
+    await model.loadCached()
+    #expect(model.accounts == previousAccounts)
+    #expect(model.errorMessage == "할당량 정보를 불러오지 못했습니다. 다시 시도해 주세요.")
+}
+
+@Test("nonzero subprocess exit rejects even apparently valid stdout")
+func processExecutorRejectsNonzeroExit() async {
+    let executor = ProcessQuotaCommandExecutor(
+        executableURL: URL(fileURLWithPath: "/bin/sh"),
+        baseArguments: ["-c", "printf '{\"schemaVersion\":1,\"accounts\":[]}'; exit 7"]
+    )
+    do {
+        _ = try await executor.run(arguments: [], timeout: .seconds(1))
+        Issue.record("Expected nonzero exit to fail")
+    } catch QuotaCommandError.processFailed {
+        // Expected; stdout is unusable when the command fails.
+    } catch {
+        Issue.record("Expected a sanitized process failure")
+    }
+}
+
+@Test("cancelling the caller promptly terminates its subprocess")
+func processExecutorPropagatesCancellation() async throws {
+    let executor = ProcessQuotaCommandExecutor(
+        executableURL: URL(fileURLWithPath: "/bin/sh"),
+        baseArguments: ["-c", "trap '' TERM; exec sleep 5"]
+    )
+    let clock = ContinuousClock()
+    let start = clock.now
+    let task = Task { try await executor.run(arguments: [], timeout: .seconds(3)) }
+    try await Task.sleep(for: .milliseconds(100))
+    task.cancel()
+    do {
+        _ = try await task.value
+        Issue.record("Expected cancellation")
+    } catch is CancellationError {
+        #expect(start.duration(to: clock.now) < .seconds(1))
+    } catch {
+        Issue.record("Expected cancellation rather than waiting for timeout")
+    }
+}
+
+@MainActor
 @Test("a second update cannot start while another command is in flight")
 func updatesAreSerialized() async {
     let executor = SuspendedExecutor()
@@ -119,6 +187,17 @@ func processExecutorIgnoresStderr() async throws {
     let output = try await executor.run(arguments: [], timeout: .seconds(1))
 
     #expect(String(decoding: output, as: UTF8.self) == "visible")
+}
+
+@Test("companion supplies a parent-bound setup bypass only to its quota subprocess")
+func processExecutorSuppliesCompanionSignal() async throws {
+    let executor = ProcessQuotaCommandExecutor(
+        executableURL: URL(fileURLWithPath: "/bin/sh"),
+        baseArguments: ["-c", "printf '%s' \"$CODEX_MULTI_AUTH_QUOTA_PARENT_PID\""]
+    )
+    let output = try await executor.run(arguments: ["limits", "--json"], timeout: .seconds(1))
+    #expect(String(decoding: output, as: UTF8.self) == String(ProcessInfo.processInfo.processIdentifier))
+    #expect(ProcessInfo.processInfo.environment["CODEX_MULTI_AUTH_QUOTA_PARENT_PID"] == nil)
 }
 
 @Test("process executor terminates a command at its deadline")

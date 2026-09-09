@@ -728,6 +728,17 @@ const CLI_COMMAND_HANDLERS: ReadonlyMap<string, CliCommandHandler> = new Map<
 ]);
 
 export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
+	// A child-only, parent-bound signal prevents a login-shell environment from
+	// accidentally opting ordinary commands out of setup. This is not an auth token.
+	const companionParent = process.env.CODEX_MULTI_AUTH_QUOTA_PARENT_PID;
+	delete process.env.CODEX_MULTI_AUTH_QUOTA_PARENT_PID;
+	const companionArgs = rawArgs[0] === "auth" ? rawArgs.slice(1) : rawArgs;
+	const limitsHandler = CLI_COMMAND_HANDLERS.get("limits");
+	if (limitsHandler && process.platform === "darwin" && companionParent === String(process.ppid)
+		&& companionArgs[0] === "limits" && companionArgs[1] === "--json"
+		&& (companionArgs.length === 2 || (companionArgs.length === 3 && companionArgs[2] === "--refresh"))) {
+		return limitsHandler(companionArgs.slice(1));
+	}
 	// Companion management must not initialize account storage or app routing.
 	if (rawArgs[0] === "menubar" || (rawArgs[0] === "auth" && rawArgs[1] === "menubar")) {
 		return runMenubarCommand(rawArgs.slice(rawArgs[0] === "auth" ? 2 : 1));

@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { access, copyFile, mkdir, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -20,6 +21,7 @@ export type MenubarCommandDeps = {
 	path?: string;
 	run?: (file: string, args: string[]) => Promise<void>;
 	writeFile?: (path: string, contents: string) => Promise<void>;
+	readFile?: (path: string) => Promise<Buffer>;
 	copyFile?: (source: string, destination: string) => Promise<void>;
 	mkdir?: (path: string, options: { recursive: true }) => Promise<unknown>;
 	rm?: (path: string, options: { recursive: boolean; force: true }) => Promise<void>;
@@ -105,13 +107,22 @@ export async function runMenubarCommand(args: string[], deps: MenubarCommandDeps
 		const packageRoot = deps.packageRoot ?? dirname(createRequire(import.meta.url).resolve("codex-multi-auth/package.json"));
 		const source = join(packageRoot, "apps", "macos-menubar");
 		await run("swift", ["build", "--package-path", source, "--configuration", "release", "--product", EXECUTABLE]);
+		const read = deps.readFile ?? readFile;
+		const packageInfo: { version?: unknown } = JSON.parse((await read(join(packageRoot, "package.json"))).toString("utf8"));
+		if (typeof packageInfo.version !== "string" || !packageInfo.version.trim()) throw new Error("Package version is unavailable.");
+		const sourceBinary = join(source, ".build", "release", EXECUTABLE);
+		const digest = createHash("sha256").update(await read(sourceBinary)).digest("hex");
+		const infoPath = join(app, "Contents", "Info.plist");
+		const info = plistDocument(`<key>CFBundleIdentifier</key><string>${LABEL}</string>\n<key>CFBundleName</key><string>Codex Multi Auth Quota</string>\n<key>CFBundleExecutable</key><string>${EXECUTABLE}</string>\n<key>CFBundlePackageType</key><string>APPL</string>\n<key>CFBundleShortVersionString</key><string>${xml(packageInfo.version)}</string>\n<key>CFBundleVersion</key><string>${xml(packageInfo.version)}</string>\n<key>CodexMultiAuthBuildDigest</key><string>${digest}</string>\n<key>LSUIElement</key><true/>\n<key>NSAppleEventsUsageDescription</key><string>Opens Codex Multi Auth in Terminal when you choose Open Codex Multi Auth.</string>`);
+		const installed = await exists(app);
+		const current = installed && await exists(infoPath) && (await read(infoPath)).toString("utf8") === info;
 		await bootout();
 		const makeDirectory = deps.mkdir ?? mkdir;
 		const write = deps.writeFile ?? writeFile;
 		const binary = join(app, "Contents", "MacOS", EXECUTABLE);
 		await makeDirectory(dirname(binary), { recursive: true });
-		await (deps.copyFile ?? copyFile)(join(source, ".build", "release", EXECUTABLE), binary);
-		await write(join(app, "Contents", "Info.plist"), plistDocument(`<key>CFBundleIdentifier</key><string>${LABEL}</string>\n<key>CFBundleName</key><string>Codex Multi Auth Quota</string>\n<key>CFBundleExecutable</key><string>${EXECUTABLE}</string>\n<key>CFBundlePackageType</key><string>APPL</string>\n<key>LSUIElement</key><true/>`));
+		await (deps.copyFile ?? copyFile)(sourceBinary, binary);
+		await write(infoPath, info);
 		await run("codesign", ["--force", "--sign", "-", app]);
 		// Preserve custom npm/version-manager bins for launchd's clean environment.
 		const npmModules = dirname(packageRoot);
@@ -122,7 +133,9 @@ export async function runMenubarCommand(args: string[], deps: MenubarCommandDeps
 		await write(agent, plistDocument(`<key>Label</key><string>${LABEL}</string>\n<key>ProgramArguments</key><array><string>${xml(binary)}</string></array>\n<key>RunAtLoad</key><true/>\n<key>EnvironmentVariables</key><dict><key>PATH</key><string>${xml(path)}</string></dict>`));
 		await run("launchctl", ["bootstrap", `gui/${uid}`, agent]);
 		await run("open", [app]);
-		log("Menu bar companion installed and configured to start at login.");
+		log(current
+			? "Menu bar companion already current; installation and login startup renewed."
+			: `Menu bar companion ${installed ? "updated" : "installed"} and configured to start at login.`);
 		return 0;
 	} catch (error) {
 		log(`Menu bar ${action} failed: ${error instanceof Error ? error.message : String(error)}`);

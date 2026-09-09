@@ -17,6 +17,13 @@ struct QuotaPopoverView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            if let terminalErrorMessage = model.terminalErrorMessage {
+                Label(terminalErrorMessage, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Divider()
             footer
         }
@@ -81,17 +88,14 @@ struct QuotaPopoverView: View {
 
             Spacer()
 
-            Button("Codex Multi Auth 열기", action: openCodexMultiAuth)
+            Button("Codex Multi Auth 열기") {
+                model.openCodexMultiAuth()
+            }
             Button("종료") {
                 NSApplication.shared.terminate(nil)
             }
         }
         .controlSize(.small)
-    }
-
-    private func openCodexMultiAuth() {
-        let script = "tell application \"Terminal\" to do script \"codex-multi-auth\""
-        NSAppleScript(source: script)?.executeAndReturnError(nil)
     }
 }
 

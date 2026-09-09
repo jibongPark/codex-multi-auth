@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Darwin
 import Foundation
@@ -9,6 +10,14 @@ protocol QuotaCommandExecuting: Sendable {
 enum QuotaCommandError: Error {
     case processFailed
     case timedOut
+}
+
+@MainActor
+func executeTerminalScript(_ script: NSAppleScript?) throws {
+    guard let script else { throw QuotaCommandError.processFailed }
+    var error: NSDictionary?
+    script.executeAndReturnError(&error)
+    guard error == nil else { throw QuotaCommandError.processFailed }
 }
 
 struct ProcessQuotaCommandExecutor: QuotaCommandExecuting {
@@ -27,12 +36,16 @@ struct ProcessQuotaCommandExecutor: QuotaCommandExecuting {
         let executableURL = executableURL
         let commandArguments = baseArguments + arguments
 
-        return try await Task.detached(priority: .userInitiated) {
+        let task = Task.detached(priority: .userInitiated) {
+            try Task.checkCancellation()
             let process = Process()
             let stdout = Pipe()
             let output = LockedDataBuffer()
             process.executableURL = executableURL
             process.arguments = commandArguments
+            var environment = ProcessInfo.processInfo.environment
+            environment["CODEX_MULTI_AUTH_QUOTA_PARENT_PID"] = String(ProcessInfo.processInfo.processIdentifier)
+            process.environment = environment
             process.standardOutput = stdout
             process.standardError = FileHandle.nullDevice
 
@@ -91,7 +104,12 @@ struct ProcessQuotaCommandExecutor: QuotaCommandExecuting {
                 throw QuotaCommandError.processFailed
             }
             return output.value
-        }.value
+        }
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 }
 
@@ -118,6 +136,7 @@ final class QuotaDashboardModel: ObservableObject {
 
     @Published private(set) var accounts: [QuotaDisplayAccount] = []
     @Published private(set) var errorMessage: String?
+    @Published private(set) var terminalErrorMessage: String?
     @Published private(set) var isRefreshing = false
 
     private let executor: any QuotaCommandExecuting
@@ -138,6 +157,17 @@ final class QuotaDashboardModel: ObservableObject {
 
     func refresh() async {
         await load(arguments: ["limits", "--json", "--refresh"], timeout: .seconds(30))
+    }
+
+    func openCodexMultiAuth(execute: @MainActor () throws -> Void = {
+        try executeTerminalScript(NSAppleScript(source: "tell application \"Terminal\" to do script \"codex-multi-auth\""))
+    }) {
+        do {
+            try execute()
+            terminalErrorMessage = nil
+        } catch {
+            terminalErrorMessage = "Terminal을 열지 못했습니다. 시스템 설정의 자동화 권한을 확인한 뒤 다시 시도해 주세요."
+        }
     }
 
     func updateCountdowns() {
