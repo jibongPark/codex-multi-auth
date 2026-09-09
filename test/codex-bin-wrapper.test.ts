@@ -7096,6 +7096,54 @@ describe("codex bin wrapper", () => {
 		expect(result.stdout).not.toContain('model_reasoning_effort = "none"');
 	});
 
+	it.each([
+		{ args: ["auth", "menubar", "install"], batch: "1", profile: "0", changes: false },
+		{ args: ["multi", "auth", "menubar", "uninstall"], batch: "0", profile: "1", changes: false },
+		{ args: ["multi-auth", "menubar", "status"], batch: "1", profile: "1", changes: false },
+		{ args: ["multiauth", "menubar", "status"], batch: "1", profile: "1", changes: false },
+		{ args: ["auth", "list"], batch: "1", profile: "1", changes: true },
+	])("keeps Windows guard effects scoped for $args (batch=$batch, profile=$profile)", ({ args, batch, profile, changes }) => {
+		const fixtureRoot = createWrapperFixture();
+		const shimDir = join(fixtureRoot, "shim-bin");
+		const userHome = join(fixtureRoot, "user-home");
+		const distLibDir = join(fixtureRoot, "dist", "lib");
+		mkdirSync(shimDir, { recursive: true });
+		mkdirSync(userHome, { recursive: true });
+		mkdirSync(distLibDir, { recursive: true });
+		writeFileSync(join(shimDir, "codex-multi-auth.cmd"), "@ECHO OFF\r\n", "utf8");
+		// Execute the unchanged wrapper entrypoint in a child with Windows platform
+		// detection enabled on every test host; only its manager boundary is stubbed.
+		const preload = join(fixtureRoot, "windows-platform.cjs");
+		writeFileSync(preload, 'Object.defineProperty(process, "platform", { value: "win32" });\n', "utf8");
+		writeFileSync(join(distLibDir, "codex-manager.js"), [
+			"export async function runCodexMultiAuthCli(args) {",
+			"  console.log(JSON.stringify(args));",
+			"  return args[1] === 'menubar' ? 1 : 0;",
+			"}",
+		].join("\n"), "utf8");
+
+		const result = runWrapper(fixtureRoot, args, {
+			NODE_OPTIONS: `--require ${JSON.stringify(preload)}`,
+			CODEX_MULTI_AUTH_WINDOWS_BATCH_SHIM_GUARD: batch,
+			CODEX_MULTI_AUTH_PWSH_PROFILE_GUARD: profile,
+			CODEX_MULTI_AUTH_BYPASS: "0",
+			PATH: shimDir,
+			USERPROFILE: userHome,
+			HOME: userHome,
+		}, { timeoutMs: 5_000 });
+
+		expect(result.error).toBeUndefined();
+		expect(result.status).toBe(changes ? 0 : 1);
+		expect(JSON.parse(result.stdout.trim())).toEqual(changes ? ["auth", "list"] : ["auth", "menubar", args.at(-1)]);
+		expect(readdirSync(shimDir).sort()).toEqual(changes
+			? ["codex-multi-auth.cmd", "codex.bat", "codex.cmd", "codex.ps1"]
+			: ["codex-multi-auth.cmd"]);
+		for (const shell of ["PowerShell", "WindowsPowerShell"]) {
+			expect(existsSync(join(userHome, "Documents", shell, "Microsoft.PowerShell_profile.ps1"))).toBe(changes);
+		}
+		if (!changes) expect(readdirSync(userHome)).toEqual([]);
+	});
+
 	it.skipIf(process.platform !== "win32")(
 		"installs Windows codex shell guards to survive shim takeover",
 		() => {

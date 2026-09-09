@@ -6477,8 +6477,12 @@ async function main() {
 	}
 
 	const normalizedArgs = normalizeAuthAlias(rawArgs);
-	await showUpdateNoticeIfAvailable(rawArgs, normalizedArgs);
-	ensureWindowsShellShimGuards();
+	const isMenubarCommand = normalizedArgs[0] === "auth" && normalizedArgs[1] === "menubar";
+	// Companion status and platform rejection must not change wrapper/user setup.
+	if (!isMenubarCommand) {
+		await showUpdateNoticeIfAvailable(rawArgs, normalizedArgs);
+		ensureWindowsShellShimGuards();
+	}
 
 	const bypass = (process.env.CODEX_MULTI_AUTH_BYPASS ?? "").trim() === "1";
 
