@@ -222,19 +222,56 @@ function compareSemverDescending(left: string, right: string): number {
 }
 
 describe("Documentation Integrity", () => {
-	it("documents every menu bar command and manual quota refresh", () => {
-		const readme = readFileSync(join(projectRoot, "README.md"), "utf8");
-		const commands = readFileSync(
-			join(projectRoot, "docs/reference/commands.md"),
-			"utf8",
-		);
-		for (const action of ["install", "status", "uninstall"]) {
-			expect(readme).toContain(`codex-multi-auth menubar ${action}`);
-			expect(commands).toContain(`codex-multi-auth menubar ${action}`);
+	describe("menu bar public contract", () => {
+		function section(file: string, heading: string): string {
+			const body = read(file).split(`\n## ${heading}\n`)[1]?.split("\n## ")[0];
+			expect(body, `${file}: missing ${heading} section`).toBeDefined();
+			return (body ?? "").replace(/\s+/g, " ");
 		}
-		const menubarSection = commands.split("## `codex-multi-auth menubar`")[1]?.split("\n## ")[0];
-		expect(menubarSection).toContain("manual");
-		expect(menubarSection).toContain("limits --json --refresh");
+
+		const paths = [
+			"~/Applications/Codex Multi Auth Quota.app",
+			"~/Library/LaunchAgents/com.ndycode.codex-multi-auth-quota.plist",
+		];
+
+		it.each([
+			["README.md", "macOS Menu Bar Quota Dashboard"],
+			["docs/reference/commands.md", "`codex-multi-auth menubar`"],
+		])("retains setup, privacy, refresh, and removal contracts in %s", (file, heading) => {
+			const body = section(file, heading);
+			for (const action of ["install", "status", "uninstall"]) {
+				expect(body).toContain(`codex-multi-auth menubar ${action}`);
+			}
+			for (const path of paths) expect(body).toContain(path);
+			expect(body).toMatch(/macOS 13 (?:or later|and later)/);
+			expect(body).toContain("Xcode Command Line Tools");
+			expect(body).toContain("xcode-select --install");
+			expect(body).toMatch(/Swift 5\.9 (?:or newer|or later)/);
+			expect(body).toMatch(/(?:registers login launch|starts the app at login)/);
+			expect(body).toMatch(/masked (?:account )?labels/);
+			expect(body).toMatch(/does not (?:read (?:account )?|open )credential files, receive (?:OAuth )?tokens, or display (?:unmasked emails|raw account emails)/);
+			expect(body).toContain("`codex-multi-auth limits --json`");
+			expect(body).toContain("every 60 seconds");
+			expect(body).toMatch(/cached reads (?:make no|without) network requests/);
+			expect(body).toMatch(/manual refresh[^.]*`codex-multi-auth limits --json --refresh`/);
+			expect(body).toContain("five-minute freshness floor");
+			expect(body).toMatch(/(?:Uninstall|`uninstall`)[^.]*removes only[^.]*(?:app bundle and LaunchAgent|plist and companion bundle)/);
+			expect(body).toMatch(/(?:saved accounts|Accounts), quota cache[^.]*official Codex app[^.]*(?:remain intact|are preserved)/);
+		});
+
+		it("retains managed paths and account-data boundaries in the storage reference", () => {
+			const body = section("docs/reference/storage-paths.md", "macOS Menu Bar Companion");
+			for (const path of paths) expect(body).toContain(path);
+			expect(body).toContain("Contents/MacOS/CodexMultiAuthQuota");
+			expect(body).toContain("User login launch registration");
+			expect(body).toContain("masked labels");
+			expect(body).toMatch(/does not read credential files/);
+			expect(body).toContain("`codex-multi-auth limits --json`");
+			expect(body).toMatch(/Cached reads[^.]*every 60 seconds/);
+			expect(body).toMatch(/Manual refresh[^.]*`limits --json --refresh`[^.]*update the CLI-owned quota cache/);
+			expect(body).toMatch(/`codex-multi-auth menubar uninstall`[^.]*removes only the two managed paths/);
+			expect(body).toMatch(/preserves `~\/\.codex\/multi-auth\/`, saved accounts, quota cache, official Codex state under `~\/\.codex\/`, and the official Codex app/);
+		});
 	});
 
 	it("has all required user docs and release notes", () => {
