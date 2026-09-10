@@ -133,3 +133,9 @@ func formatsResetCountdown() {
 
     #expect(window.display(now: now).resetText == "01:01 후 재설정")
 }
+
+@Test("reserves visible space for the loaded account quota list")
+func quotaAccountListReservesVisibleHeight() {
+    #expect(QuotaPopoverLayout.accountListMinimumHeight == 110)
+    #expect(QuotaPopoverLayout.accountListMaximumHeight == 420)
+}

@@ -1,6 +1,11 @@
 import AppKit
 import SwiftUI
 
+enum QuotaPopoverLayout {
+    static let accountListMinimumHeight: CGFloat = 110
+    static let accountListMaximumHeight: CGFloat = 420
+}
+
 struct QuotaPopoverView: View {
     @ObservedObject var model: QuotaDashboardModel
 
@@ -69,7 +74,10 @@ struct QuotaPopoverView: View {
                         }
                     }
                 }
-                .frame(maxHeight: 420)
+                .frame(
+                    minHeight: QuotaPopoverLayout.accountListMinimumHeight,
+                    maxHeight: QuotaPopoverLayout.accountListMaximumHeight
+                )
             }
         }
     }
