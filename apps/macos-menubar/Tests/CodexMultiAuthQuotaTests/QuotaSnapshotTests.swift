@@ -222,3 +222,13 @@ func displaysFractionalSecondResetTicketExpiry() throws {
     let expiry = try #require(display.earliestExpiry)
     #expect(abs(expiry.timeIntervalSince1970 - 1_798_761_600.123456) < 0.001)
 }
+
+@Test("formats reset ticket expiry as a compact month-day value")
+func formatsCompactResetTicketExpiry() {
+    let summary = resetTicketSummary(ResetTicketDisplay(
+        availableCount: 3,
+        earliestExpiry: Date(timeIntervalSince1970: 1_789_862_400)
+    ))
+
+    #expect(summary == "초기화권 3개 · 09-20 만료")
+}

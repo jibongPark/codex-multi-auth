@@ -156,6 +156,7 @@ private struct AccountQuotaRow: View {
                 Text(account.label)
                     .fontWeight(account.current ? .semibold : .regular)
                     .lineLimit(1)
+                    .layoutPriority(1)
                 Spacer(minLength: 8)
                 if account.current {
                     Text("현재")
@@ -166,8 +167,20 @@ private struct AccountQuotaRow: View {
                 }
                 if !account.enabled {
                     Text("비활성")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+
+                if let resetTickets = account.resetTickets {
+                    Text(resetTicketSummary(resetTickets))
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Button("초기화") {
+                        redeemResetTicket()
+                    }
+                    .controlSize(.mini)
+                    .disabled(!account.enabled || resetTickets.availableCount == 0)
                 }
             }
 
@@ -189,19 +202,6 @@ private struct AccountQuotaRow: View {
                     .foregroundStyle(.secondary)
             }
 
-            if let resetTickets = account.resetTickets {
-                HStack(spacing: 6) {
-                    Text(resetTicketSummary(resetTickets))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("초기화") {
-                        redeemResetTicket()
-                    }
-                    .controlSize(.mini)
-                    .disabled(!account.enabled || resetTickets.availableCount == 0)
-                }
-            }
         }
         .padding(6)
         .background(account.current ? Color.accentColor.opacity(0.08) : Color.secondary.opacity(0.06))
@@ -210,10 +210,14 @@ private struct AccountQuotaRow: View {
     }
 }
 
-private func resetTicketSummary(_ tickets: ResetTicketDisplay) -> String {
+func resetTicketSummary(_ tickets: ResetTicketDisplay) -> String {
     guard tickets.availableCount > 0 else { return "초기화권 없음" }
     guard let expiry = tickets.earliestExpiry else { return "초기화권 \(tickets.availableCount)개" }
-    return "초기화권 \(tickets.availableCount)개 · \(expiry.formatted(date: .abbreviated, time: .omitted)) 만료"
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = .current
+    formatter.dateFormat = "MM-dd"
+    return "초기화권 \(tickets.availableCount)개 · \(formatter.string(from: expiry)) 만료"
 }
 
 private struct QuotaWindowRow: View {
