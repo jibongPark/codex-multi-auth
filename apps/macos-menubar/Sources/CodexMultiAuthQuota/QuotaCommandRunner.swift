@@ -136,12 +136,16 @@ final class QuotaDashboardModel: ObservableObject {
 
     @Published private(set) var accounts: [QuotaDisplayAccount] = []
     @Published private(set) var errorMessage: String?
+    @Published private(set) var resetTicketsErrorMessage: String?
     @Published private(set) var terminalErrorMessage: String?
     @Published private(set) var isRefreshing = false
+    @Published private(set) var isLoadingResetTickets = false
+    @Published private(set) var isRedeemingResetTicket = false
 
     private let executor: any QuotaCommandExecuting
     private let now: @Sendable () -> Date
     private var snapshot: QuotaSnapshot?
+    private var resetTicketsByIndex: [Int: ResetTicketDisplay] = [:]
 
     init(
         executor: any QuotaCommandExecuting = ProcessQuotaCommandExecutor(),
@@ -152,11 +156,63 @@ final class QuotaDashboardModel: ObservableObject {
     }
 
     func loadCached() async {
-        await load(arguments: ["limits", "--json"], timeout: .seconds(10))
+        _ = await load(arguments: ["limits", "--json"], timeout: .seconds(10))
     }
 
     func refresh() async {
-        await load(arguments: ["limits", "--json", "--refresh"], timeout: .seconds(30))
+        if await load(arguments: ["limits", "--json", "--refresh"], timeout: .seconds(30)) {
+            await loadResetTickets()
+        }
+    }
+
+    func loadResetTickets() async {
+        guard !isRefreshing, !isLoadingResetTickets, let snapshot else { return }
+        isLoadingResetTickets = true
+        defer { isLoadingResetTickets = false }
+
+        var next = resetTicketsByIndex
+        var hasFailure = false
+        for account in snapshot.accounts where account.enabled {
+            do {
+                let data = try await executor.run(
+                    arguments: ["reset", "account=\(account.index + 1)", "format=json"],
+                    timeout: .seconds(10)
+                )
+                next[account.index] = try ResetTicketSnapshot.decode(data: data).display(now: now())
+            } catch {
+                hasFailure = true
+            }
+        }
+        resetTicketsByIndex = next
+        updateCountdowns()
+        resetTicketsErrorMessage = hasFailure
+            ? "초기화권 정보를 불러오지 못했습니다. 다시 시도해 주세요."
+            : nil
+    }
+
+    func redeemResetTicket(for account: QuotaDisplayAccount) async {
+        guard !isRedeemingResetTicket, account.enabled, account.resetTickets?.availableCount ?? 0 > 0 else {
+            return
+        }
+        isRedeemingResetTicket = true
+        defer { isRedeemingResetTicket = false }
+
+        do {
+            _ = try await executor.run(
+                arguments: [
+                    "reset",
+                    "action=consume",
+                    "account=\(account.index + 1)",
+                    "confirm=true",
+                    "format=json",
+                ],
+                timeout: .seconds(30)
+            )
+            resetTicketsErrorMessage = nil
+            await refresh()
+        } catch {
+            resetTicketsErrorMessage = "초기화권을 사용하지 못했습니다. 다시 시도해 주세요."
+        }
     }
 
     func openCodexMultiAuth(execute: @MainActor () throws -> Void = {
@@ -172,7 +228,7 @@ final class QuotaDashboardModel: ObservableObject {
 
     func updateCountdowns() {
         guard let snapshot else { return }
-        accounts = snapshot.displayAccounts(now: now())
+        accounts = snapshot.displayAccounts(now: now(), resetTicketsByIndex: resetTicketsByIndex)
     }
 
     func monitorCachedQuota() async {
@@ -188,8 +244,8 @@ final class QuotaDashboardModel: ObservableObject {
         }
     }
 
-    private func load(arguments: [String], timeout: Duration) async {
-        guard !isRefreshing else { return }
+    private func load(arguments: [String], timeout: Duration) async -> Bool {
+        guard !isRefreshing else { return false }
         isRefreshing = true
         defer { isRefreshing = false }
 
@@ -197,10 +253,12 @@ final class QuotaDashboardModel: ObservableObject {
             let data = try await executor.run(arguments: arguments, timeout: timeout)
             let decoded = try QuotaSnapshot.decode(data: data)
             snapshot = decoded
-            accounts = decoded.displayAccounts(now: now())
+            updateCountdowns()
             errorMessage = nil
+            return true
         } catch {
             errorMessage = Self.loadingError
+            return false
         }
     }
 }

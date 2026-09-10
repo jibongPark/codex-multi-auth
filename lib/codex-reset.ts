@@ -7,7 +7,7 @@ export const CODEX_RESET_CREDIT_AVAILABLE_STATUS = "available";
 
 const RESET_CREDITS_PATH = "/wham/rate-limit-reset-credits";
 const RESET_CREDITS_CONSUME_PATH = `${RESET_CREDITS_PATH}/consume`;
-const ERROR_BODY_MAX_CHARS = 4096;
+const RESET_REQUEST_TIMEOUT_MS = 10_000;
 
 export type CodexResetCreditEntry = {
 	id?: string;
@@ -92,11 +92,19 @@ function expirySortValue(credit: CodexResetCredit): number | null {
 	return Number.isFinite(value) ? value : null;
 }
 
+function hasFutureExpiry(credit: CodexResetCredit, now: number): boolean {
+	const expiresAt = expirySortValue(credit);
+	return expiresAt !== null && expiresAt > now;
+}
+
 export function selectRedeemableCredit(
 	summary: CodexResetCreditsSummary,
 	creditId?: string,
+	now = Date.now(),
 ): CodexResetCreditSelection {
-	const available = summary.credits.filter((credit) => credit.isAvailable);
+	const available = summary.credits.filter(
+		(credit) => credit.isAvailable && hasFutureExpiry(credit, now),
+	);
 	const requestedId = creditId?.trim();
 	if (requestedId) {
 		const credit = available.find((entry) => entry.id === requestedId);
@@ -131,10 +139,6 @@ export function createRedeemRequestId(creditId: string): string {
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-function sanitizeErrorBody(body: string): string {
-	return body.replace(/Bearer\s+[^\s,;]+/gi, "Bearer [redacted]");
-}
-
 async function requestCodexResetJson<T>(params: {
 	path: string;
 	method: "GET" | "POST";
@@ -150,10 +154,10 @@ async function requestCodexResetJson<T>(params: {
 		method: params.method,
 		headers,
 		body: params.body === undefined ? undefined : JSON.stringify(params.body),
+		signal: AbortSignal.timeout(RESET_REQUEST_TIMEOUT_MS),
 	});
 	if (!response.ok) {
-		const body = sanitizeErrorBody((await response.text()).slice(0, ERROR_BODY_MAX_CHARS));
-		throw new Error(`HTTP ${response.status}: ${body || response.statusText}`);
+		throw new Error(`HTTP ${response.status}: request failed`);
 	}
 	return (await response.json()) as T;
 }

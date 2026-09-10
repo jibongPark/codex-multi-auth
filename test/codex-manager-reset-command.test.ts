@@ -29,6 +29,18 @@ function createDeps() {
 	};
 	const logInfo = vi.fn();
 	const logError = vi.fn();
+	const quotaCache = {
+		byAccountId: {
+			active: {
+				updatedAt: 1,
+				status: 429,
+				model: "gpt-5.6",
+				primary: { usedPercent: 100, resetAtMs: Date.now() + 60_000 },
+				secondary: {},
+			},
+		},
+		byEmail: {},
+	};
 	return {
 		storage,
 		logInfo,
@@ -46,6 +58,8 @@ function createDeps() {
 			})),
 			fetchUsage: vi.fn(async () => ({ plan_type: "pro" })),
 			consumeCredit: vi.fn(async () => ({ code: "ok" })),
+			loadQuotaCache: vi.fn(async () => structuredClone(quotaCache)),
+			saveQuotaCache: vi.fn(async () => undefined),
 			logInfo,
 			logError,
 		},
@@ -53,14 +67,11 @@ function createDeps() {
 }
 
 describe("reset manager command", () => {
-	it("uses the active account and reads credits and usage for status", async () => {
+	it("uses the active account to read reset credits for status", async () => {
 		const { deps, logInfo } = createDeps();
 
 		await expect(runResetCommand([], deps)).resolves.toBe(0);
 		expect(deps.fetchCredits).toHaveBeenCalledWith(
-			expect.objectContaining({ accountId: "active", accessToken: "access-token" }),
-		);
-		expect(deps.fetchUsage).toHaveBeenCalledWith(
 			expect.objectContaining({ accountId: "active", accessToken: "access-token" }),
 		);
 		expect(logInfo).toHaveBeenCalledWith(expect.stringContaining("earlier"));
@@ -75,7 +86,8 @@ describe("reset manager command", () => {
 	});
 
 	it("consumes the selected account ticket only after confirmation and clears local limits", async () => {
-		const { deps } = createDeps();
+		const { storage, deps } = createDeps();
+		storage.accounts[0]!.cooldownReason = "rate-limit";
 
 		await expect(
 			runResetCommand(["action=consume", "account=1", "confirm=true"], deps),
@@ -86,6 +98,32 @@ describe("reset manager command", () => {
 		const savedStorage = deps.saveAccounts.mock.calls[0]?.[0];
 		expect(savedStorage?.accounts[0]?.rateLimitResetTimes).toBeUndefined();
 		expect(savedStorage?.accounts[0]?.coolingDownUntil).toBeUndefined();
+	});
+
+	it("preserves a non-rate-limit cooldown after redeeming a ticket", async () => {
+		const { storage, deps } = createDeps();
+		storage.accounts[0]!.cooldownReason = "auth-failure";
+
+		await expect(
+			runResetCommand(["action=consume", "account=1", "confirm=true"], deps),
+		).resolves.toBe(0);
+
+		const savedStorage = deps.saveAccounts.mock.calls[0]?.[0];
+		expect(savedStorage?.accounts[0]?.coolingDownUntil).toBeDefined();
+		expect(savedStorage?.accounts[0]?.cooldownReason).toBe("auth-failure");
+	});
+
+	it("invalidates only the redeemed account quota cache", async () => {
+		const { deps } = createDeps();
+
+		await expect(
+			runResetCommand(["action=consume", "account=1", "confirm=true"], deps),
+		).resolves.toBe(0);
+
+		expect(deps.saveQuotaCache).toHaveBeenCalledWith({
+			byAccountId: {},
+			byEmail: {},
+		});
 	});
 
 	it("rejects unknown key=value inputs", async () => {
@@ -100,5 +138,32 @@ describe("reset manager command", () => {
 
 		await expect(runResetCommand(["includeSensitive=true"], deps)).resolves.toBe(0);
 		expect(logInfo.mock.calls[0]?.[0]).not.toContain("active");
+	});
+
+	it("does not serialize provider usage fields in reset status JSON", async () => {
+		const { deps, logInfo } = createDeps();
+		deps.fetchUsage.mockResolvedValue({
+			email: "private@example.com",
+			access_token: "provider-secret",
+		});
+
+		await expect(runResetCommand(["format=json"], deps)).resolves.toBe(0);
+
+		expect(logInfo.mock.calls[0]?.[0]).not.toContain("private@example.com");
+		expect(logInfo.mock.calls[0]?.[0]).not.toContain("provider-secret");
+	});
+
+	it("does not serialize provider consume details in reset JSON", async () => {
+		const { deps, logInfo } = createDeps();
+		deps.consumeCredit.mockResolvedValue({
+			code: "ok",
+			windows_reset: { account_email: "private@example.com" },
+		});
+
+		await expect(
+			runResetCommand(["action=consume", "confirm=true", "format=json"], deps),
+		).resolves.toBe(0);
+
+		expect(logInfo.mock.calls[0]?.[0]).not.toContain("private@example.com");
 	});
 });

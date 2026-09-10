@@ -18,6 +18,7 @@ struct CodexMultiAuthQuotaApp: App {
                 .task {
                     model.updateCountdowns()
                     await model.loadCached()
+                    await model.loadResetTickets()
                 }
         } label: {
             Image(systemName: "gauge.with.dots.needle.67percent")

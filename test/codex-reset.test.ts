@@ -68,6 +68,26 @@ describe("codex reset credits", () => {
 		});
 	});
 
+	it("never selects expired or malformed available credits", () => {
+		const summary = parseCodexResetCredits({
+			credits: [
+				{ id: "expired", status: "available", expires_at: "2025-01-01T00:00:00Z" },
+				{ id: "malformed", status: "available", expires_at: "not-a-date" },
+				{ id: "valid", status: "available", expires_at: "2027-01-01T00:00:00Z" },
+			],
+		});
+		const now = Date.parse("2026-01-01T00:00:00Z");
+
+		expect(selectRedeemableCredit(summary, undefined, now)).toMatchObject({
+			type: "selected",
+			credit: { id: "valid" },
+		});
+		expect(selectRedeemableCredit(summary, "expired", now)).toMatchObject({
+			type: "not-found",
+			creditId: "expired",
+		});
+	});
+
 	it("fetches ticket credits with the managed Codex credentials", async () => {
 		const fetchMock = vi.fn(async () => jsonResponse({ available_count: 1, credits: [] }));
 		vi.stubGlobal("fetch", fetchMock);
@@ -85,6 +105,7 @@ describe("codex reset credits", () => {
 		const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
 		expect(headers.get("authorization")).toBe("Bearer access-token");
 		expect(headers.get("chatgpt-account-id")).toBe("account-1");
+		expect(fetchMock.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
 	});
 
 	it("posts an explicit ticket id with a stable idempotency key", async () => {
@@ -111,10 +132,10 @@ describe("codex reset credits", () => {
 		expect(createRedeemRequestId("ticket-1")).toBe(redeemRequestId);
 	});
 
-	it("redacts bearer tokens from failed backend responses", async () => {
+	it("does not echo sensitive failed backend responses", async () => {
 		vi.stubGlobal(
 			"fetch",
-			vi.fn(async () => new Response("denied for Bearer secret-access-token", { status: 403 })),
+			vi.fn(async () => new Response("denied for private@example.com Bearer secret-access-token", { status: 403 })),
 		);
 
 		await expect(
@@ -123,6 +144,6 @@ describe("codex reset credits", () => {
 				accessToken: "access-token",
 				organizationId: undefined,
 			}),
-		).rejects.toThrow("HTTP 403: denied for Bearer [redacted]");
+		).rejects.toThrow("HTTP 403: request failed");
 	});
 });

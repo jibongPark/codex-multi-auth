@@ -185,3 +185,22 @@ func quotaAccountListReservesVisibleHeight() {
     #expect(QuotaPopoverLayout.accountListMinimumHeight == 260)
     #expect(QuotaPopoverLayout.accountListMaximumHeight == 320)
 }
+
+@Test("keeps the nearest valid reset-ticket expiry for compact display")
+func displaysAvailableResetTickets() throws {
+    let snapshot = try ResetTicketSnapshot.decode(data: fixture(#"""
+    {
+      "availableCount": 3,
+      "credits": [
+        { "id": "expired", "status": "available", "isAvailable": true, "expiresAt": "2025-01-01T00:00:00Z" },
+        { "id": "later", "status": "available", "isAvailable": true, "expiresAt": "2027-02-01T00:00:00Z" },
+        { "id": "earlier", "status": "available", "isAvailable": true, "expiresAt": "2027-01-01T00:00:00Z" }
+      ]
+    }
+    """#))
+
+    let display = snapshot.display(now: Date(timeIntervalSince1970: 1_735_689_600))
+
+    #expect(display.availableCount == 2)
+    #expect(display.earliestExpiry == Date(timeIntervalSince1970: 1_798_761_600))
+}

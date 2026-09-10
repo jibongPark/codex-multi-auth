@@ -163,6 +163,12 @@ and five-minute freshness floor as the CLI. Countdown updates do not imply a
 fresh provider quota reading. On errors, the last successful snapshot remains
 visible with an error message.
 
+When the popover opens, the companion also runs `codex-multi-auth reset account=<n>
+format=json` for each enabled account. Account cards show the usable reset-ticket
+count and nearest expiry. This is not part of the 60-second cached quota poll.
+An enabled **초기화** button opens a native confirmation that names the masked account
+and expiry; confirmation redeems one ticket only for that row and then refreshes it.
+
 The companion receives only the quota JSON contract, including already-masked
 labels; it does not open credential files, receive OAuth tokens, or display raw
 account emails. Its current-account indicator follows `selection.routedIndex`,
@@ -212,8 +218,8 @@ All inputs use `key=value`: `action=status|consume` (default `status`), `account
 
 `consume` is preview-only until `confirm=true`; `dryRun=true` is always preview-only. Without
 `creditId`, the command selects the available ticket with the **earliest valid expiry**. Equal
-expiry times are ordered by ticket ID; a missing or unreadable expiry is considered last but can
-still be used if it is the only available ticket. A confirmed successful redemption clears only
+expiry times are ordered by ticket ID; expired, missing, or unreadable expiries are not eligible.
+A confirmed successful redemption clears only
 that account's locally stored rate-limit/cooldown state; restart a running runtime proxy or the
 Codex app if it has already retained old state in memory.
 

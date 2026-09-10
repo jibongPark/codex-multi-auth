@@ -8,8 +8,18 @@ import {
 	type CodexResetConsumePayload,
 	type CodexResetCreditsPayload,
 } from "../../codex-reset.js";
-import { CODEX_BASE_URL } from "../../constants.js";
-import { createCodexHeaders } from "../../request/fetch-helpers.js";
+import {
+	loadQuotaCache,
+	saveQuotaCache,
+	type QuotaCacheData,
+} from "../../quota-cache.js";
+import {
+	buildQuotaEmailFallbackState,
+	hasSafeQuotaEmailFallback,
+	hasUniqueQuotaAccountId,
+	normalizeQuotaAccountId,
+	normalizeQuotaEmail,
+} from "../../quota-readiness.js";
 import { queuedRefresh } from "../../refresh-queue.js";
 import {
 	loadAccounts,
@@ -33,8 +43,6 @@ interface ResetOptions {
 	includeSensitive: boolean;
 }
 
-type UsagePayload = Record<string, unknown>;
-
 export interface ResetCommandDeps {
 	loadAccounts?: () => Promise<AccountStorageV3 | null>;
 	saveAccounts?: (storage: AccountStorageV3) => Promise<void>;
@@ -45,11 +53,6 @@ export interface ResetCommandDeps {
 		accessToken: string;
 		organizationId: string | undefined;
 	}) => Promise<CodexResetCreditsPayload>;
-	fetchUsage?: (params: {
-		accountId: string;
-		accessToken: string;
-		organizationId: string | undefined;
-	}) => Promise<UsagePayload>;
 	consumeCredit?: (params: {
 		accountId: string;
 		accessToken: string;
@@ -57,6 +60,8 @@ export interface ResetCommandDeps {
 		creditId: string;
 		redeemRequestId: string;
 	}) => Promise<CodexResetConsumePayload>;
+	loadQuotaCache?: () => Promise<QuotaCacheData>;
+	saveQuotaCache?: (cache: QuotaCacheData) => Promise<void>;
 	getNow?: () => number;
 	logInfo?: (message: string) => void;
 	logError?: (message: string) => void;
@@ -131,19 +136,6 @@ function parseResetArgs(args: string[]): ParsedArgs {
 	};
 }
 
-async function defaultFetchUsage(params: {
-	accountId: string;
-	accessToken: string;
-	organizationId: string | undefined;
-}): Promise<UsagePayload> {
-	const response = await fetch(`${CODEX_BASE_URL}/wham/usage`, {
-		method: "GET",
-		headers: createCodexHeaders(undefined, params.accountId, params.accessToken),
-	});
-	if (!response.ok) throw new Error(`Usage request failed with HTTP ${response.status}`);
-	return (await response.json()) as UsagePayload;
-}
-
 function redactedAccount(accountId: string, index: number): string {
 	const tail = accountId.length > 4 ? accountId.slice(-4) : accountId;
 	return `account ${index + 1} (id:***${tail})`;
@@ -182,9 +174,35 @@ function clearLocalRateLimitState(storage: AccountStorageV3, index: number): Acc
 	const account = next.accounts[index];
 	if (!account) return next;
 	delete account.rateLimitResetTimes;
-	delete account.coolingDownUntil;
-	delete account.cooldownReason;
+	if (account.cooldownReason === "rate-limit") {
+		delete account.coolingDownUntil;
+		delete account.cooldownReason;
+	}
 	return next;
+}
+
+function invalidateQuotaCacheForAccount(
+	cache: QuotaCacheData,
+	account: AccountStorageV3["accounts"][number],
+	accounts: AccountStorageV3["accounts"],
+): QuotaCacheData | null {
+	const next = structuredClone(cache);
+	let changed = false;
+	const accountId = normalizeQuotaAccountId(account.accountId);
+	if (accountId && hasUniqueQuotaAccountId(accounts, account) && next.byAccountId[accountId]) {
+		delete next.byAccountId[accountId];
+		changed = true;
+	}
+	const email = normalizeQuotaEmail(account.email);
+	if (
+		email &&
+		hasSafeQuotaEmailFallback(buildQuotaEmailFallbackState(accounts), account) &&
+		next.byEmail[email]
+	) {
+		delete next.byEmail[email];
+		changed = true;
+	}
+	return changed ? next : null;
 }
 
 export async function runResetCommand(
@@ -238,6 +256,10 @@ export async function runResetCommand(
 		return 1;
 	}
 	const selectedAccount = workingStorage.accounts[index];
+	if (!selectedAccount) {
+		logError("The selected account is no longer available.");
+		return 1;
+	}
 	const accountId = selectedAccount?.accountId ?? extractAccountId(accessToken);
 	if (!accountId) {
 		logError("The selected account has no account id.");
@@ -245,7 +267,6 @@ export async function runResetCommand(
 	}
 	const requestAccount = { accountId, accessToken, organizationId: undefined };
 	const fetchCredits = deps.fetchCredits ?? fetchCodexResetCredits;
-	const fetchUsage = deps.fetchUsage ?? defaultFetchUsage;
 	const identity =
 		options.format === "json" && options.includeSensitive
 			? accountId
@@ -253,10 +274,7 @@ export async function runResetCommand(
 
 	if (options.action === "status") {
 		try {
-			const [creditsPayload, usage] = await Promise.all([
-				fetchCredits(requestAccount),
-				fetchUsage(requestAccount),
-			]);
+			const creditsPayload = await fetchCredits(requestAccount);
 			const credits = parseCodexResetCredits(creditsPayload);
 			printResult(options, logInfo, {
 				command: "reset",
@@ -264,7 +282,6 @@ export async function runResetCommand(
 				account: identity,
 				availableCount: credits.availableCount,
 				credits: credits.credits,
-				usage,
 			});
 			return 0;
 		} catch (error) {
@@ -303,19 +320,28 @@ export async function runResetCommand(
 	}
 
 	try {
-		const consumed = await (deps.consumeCredit ?? consumeCodexResetCredit)({
+		await (deps.consumeCredit ?? consumeCodexResetCredit)({
 			...requestAccount,
 			creditId: credit.id,
 			redeemRequestId: createRedeemRequestId(credit.id),
 		});
 		const nextStorage = clearLocalRateLimitState(workingStorage, index);
 		await (deps.saveAccounts ?? saveAccounts)(nextStorage);
-		let usage: UsagePayload | null = null;
-		let usageError: string | null = null;
+		let quotaCacheInvalidated = false;
+		let quotaCacheError: string | null = null;
 		try {
-			usage = await fetchUsage(requestAccount);
+			const quotaCache = await (deps.loadQuotaCache ?? loadQuotaCache)();
+			const nextQuotaCache = invalidateQuotaCacheForAccount(
+				quotaCache,
+				selectedAccount,
+				workingStorage.accounts,
+			);
+			if (nextQuotaCache) {
+				await (deps.saveQuotaCache ?? saveQuotaCache)(nextQuotaCache);
+				quotaCacheInvalidated = true;
+			}
 		} catch (error) {
-			usageError = error instanceof Error ? error.message : String(error);
+			quotaCacheError = error instanceof Error ? error.message : String(error);
 		}
 		printResult(options, logInfo, {
 			command: "reset",
@@ -323,9 +349,8 @@ export async function runResetCommand(
 			account: identity,
 			credit,
 			redeemed: true,
-			consume: consumed,
-			usage,
-			usageError,
+			quotaCacheInvalidated,
+			quotaCacheError,
 		});
 		return 0;
 	} catch (error) {
