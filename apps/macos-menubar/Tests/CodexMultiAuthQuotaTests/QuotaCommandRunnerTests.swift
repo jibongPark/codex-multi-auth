@@ -77,6 +77,32 @@ private actor SuspendedExecutor: QuotaCommandExecuting {
     }
 }
 
+private actor DelayedQuotaThenResetExecutor: QuotaCommandExecuting {
+    private(set) var commands: [[String]] = []
+    private var quotaContinuation: CheckedContinuation<Data, Never>?
+
+    func run(arguments: [String], timeout: Duration) async throws -> Data {
+        commands.append(arguments)
+        if commands.count == 1 {
+            return await withCheckedContinuation { continuation in
+                quotaContinuation = continuation
+            }
+        }
+        return validResetTicketData
+    }
+
+    func waitUntilQuotaRequested() async {
+        while commands.isEmpty {
+            await Task.yield()
+        }
+    }
+
+    func completeQuotaLoad() {
+        quotaContinuation?.resume(returning: validSnapshotData)
+        quotaContinuation = nil
+    }
+}
+
 @MainActor
 @Test("Terminal AppleScript failure is sanitized and a successful retry clears it")
 func terminalFailureIsSanitized() {
@@ -115,6 +141,31 @@ func resetTicketsUseAccountScopedCommand() async {
 
     await model.loadCached()
     await model.loadResetTickets()
+
+    #expect(await executor.commands == [
+        ["limits", "--json"],
+        ["reset", "account=1", "format=json"],
+    ])
+    #expect(model.accounts.first?.resetTickets?.availableCount == 1)
+}
+
+@MainActor
+@Test("reset ticket loading continues after an in-flight quota load")
+func resetTicketsWaitForInFlightQuotaLoad() async {
+    let executor = DelayedQuotaThenResetExecutor()
+    let model = QuotaDashboardModel(executor: executor)
+    let cachedLoad = Task { @MainActor in
+        await model.loadCached()
+    }
+    await executor.waitUntilQuotaRequested()
+
+    let ticketLoad = Task { @MainActor in
+        await model.loadResetTickets()
+    }
+    await Task.yield()
+    await executor.completeQuotaLoad()
+    await cachedLoad.value
+    await ticketLoad.value
 
     #expect(await executor.commands == [
         ["limits", "--json"],

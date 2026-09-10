@@ -146,6 +146,7 @@ final class QuotaDashboardModel: ObservableObject {
     private let now: @Sendable () -> Date
     private var snapshot: QuotaSnapshot?
     private var resetTicketsByIndex: [Int: ResetTicketDisplay] = [:]
+    private var resetTicketLoadPending = false
 
     init(
         executor: any QuotaCommandExecuting = ProcessQuotaCommandExecutor(),
@@ -157,16 +158,24 @@ final class QuotaDashboardModel: ObservableObject {
 
     func loadCached() async {
         _ = await load(arguments: ["limits", "--json"], timeout: .seconds(10))
+        _ = await loadPendingResetTicketsIfNeeded()
     }
 
     func refresh() async {
-        if await load(arguments: ["limits", "--json", "--refresh"], timeout: .seconds(30)) {
+        let refreshed = await load(arguments: ["limits", "--json", "--refresh"], timeout: .seconds(30))
+        let loadedPendingTickets = await loadPendingResetTicketsIfNeeded()
+        if refreshed && !loadedPendingTickets {
             await loadResetTickets()
         }
     }
 
     func loadResetTickets() async {
-        guard !isRefreshing, !isLoadingResetTickets, let snapshot else { return }
+        guard !isLoadingResetTickets else { return }
+        guard !isRefreshing else {
+            resetTicketLoadPending = true
+            return
+        }
+        guard let snapshot else { return }
         isLoadingResetTickets = true
         defer { isLoadingResetTickets = false }
 
@@ -224,6 +233,13 @@ final class QuotaDashboardModel: ObservableObject {
         } catch {
             terminalErrorMessage = "Terminal을 열지 못했습니다. 시스템 설정의 자동화 권한을 확인한 뒤 다시 시도해 주세요."
         }
+    }
+
+    private func loadPendingResetTicketsIfNeeded() async -> Bool {
+        guard resetTicketLoadPending, snapshot != nil, !isRefreshing else { return false }
+        resetTicketLoadPending = false
+        await loadResetTickets()
+        return true
     }
 
     func updateCountdowns() {

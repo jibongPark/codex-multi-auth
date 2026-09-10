@@ -171,7 +171,10 @@ public struct ResetTicket: Decodable, Equatable {
 
     fileprivate var expiryDate: Date? {
         guard let expiresAt else { return nil }
-        return ISO8601DateFormatter().date(from: expiresAt)
+        let fractionalSecondsFormatter = ISO8601DateFormatter()
+        fractionalSecondsFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractionalSecondsFormatter.date(from: expiresAt)
+            ?? ISO8601DateFormatter().date(from: expiresAt)
     }
 }
 

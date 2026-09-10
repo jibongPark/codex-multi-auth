@@ -204,3 +204,21 @@ func displaysAvailableResetTickets() throws {
     #expect(display.availableCount == 2)
     #expect(display.earliestExpiry == Date(timeIntervalSince1970: 1_798_761_600))
 }
+
+@Test("accepts reset-ticket expiries with fractional seconds")
+func displaysFractionalSecondResetTicketExpiry() throws {
+    let snapshot = try ResetTicketSnapshot.decode(data: fixture(#"""
+    {
+      "availableCount": 1,
+      "credits": [
+        { "id": "fractional", "status": "available", "isAvailable": true, "expiresAt": "2027-01-01T00:00:00.123456Z" }
+      ]
+    }
+    """#))
+
+    let display = snapshot.display(now: Date(timeIntervalSince1970: 1_735_689_600))
+
+    #expect(display.availableCount == 1)
+    let expiry = try #require(display.earliestExpiry)
+    #expect(abs(expiry.timeIntervalSince1970 - 1_798_761_600.123456) < 0.001)
+}
