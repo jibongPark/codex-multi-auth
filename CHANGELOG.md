@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `codex-reset` lists and redeems managed Codex rate-limit reset tickets. Redemption requires
+  `confirm=true`; automatic selection uses the earliest valid ticket expiry.
+
 All notable changes to this project are documented in this file.
 Dates use ISO format (`YYYY-MM-DD`).
 

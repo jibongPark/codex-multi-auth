@@ -8,6 +8,7 @@ enum QuotaPopoverLayout {
 
 struct QuotaPopoverView: View {
     @ObservedObject var model: QuotaDashboardModel
+    @State private var resetCandidate: QuotaDisplayAccount?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -29,11 +30,39 @@ struct QuotaPopoverView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            if let resetTicketsErrorMessage = model.resetTicketsErrorMessage {
+                Label(resetTicketsErrorMessage, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Divider()
             footer
         }
         .padding(16)
         .frame(width: 360)
+        .confirmationDialog(
+            "초기화권을 사용하시겠습니까?",
+            isPresented: Binding(
+                get: { resetCandidate != nil },
+                set: { if !$0 { resetCandidate = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("초기화권 사용", role: .destructive) {
+                guard let account = resetCandidate else { return }
+                resetCandidate = nil
+                Task { await model.redeemResetTicket(for: account) }
+            }
+            Button("취소", role: .cancel) {
+                resetCandidate = nil
+            }
+        } message: {
+            if let account = resetCandidate {
+                Text(resetConfirmationMessage(for: account))
+            }
+        }
     }
 
     private var currentAccountSection: some View {
@@ -70,7 +99,9 @@ struct QuotaPopoverView: View {
                 ScrollView {
                     LazyVStack(spacing: 4) {
                         ForEach(Array(model.accounts.enumerated()), id: \.offset) { _, account in
-                            AccountQuotaRow(account: account)
+                            AccountQuotaRow(account: account) {
+                                resetCandidate = account
+                            }
                         }
                     }
                 }
@@ -108,8 +139,16 @@ struct QuotaPopoverView: View {
     }
 }
 
+private func resetConfirmationMessage(for account: QuotaDisplayAccount) -> String {
+    guard let expiry = account.resetTickets?.earliestExpiry else {
+        return "\(account.label) 계정의 초기화권 1개를 사용합니다."
+    }
+    return "\(account.label) 계정의 초기화권 1개를 사용합니다. 만료일: \(expiry.formatted(date: .abbreviated, time: .omitted))"
+}
+
 private struct AccountQuotaRow: View {
     let account: QuotaDisplayAccount
+    let redeemResetTicket: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -149,12 +188,32 @@ private struct AccountQuotaRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            if let resetTickets = account.resetTickets {
+                HStack(spacing: 6) {
+                    Text(resetTicketSummary(resetTickets))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("초기화") {
+                        redeemResetTicket()
+                    }
+                    .controlSize(.mini)
+                    .disabled(!account.enabled || resetTickets.availableCount == 0)
+                }
+            }
         }
         .padding(6)
         .background(account.current ? Color.accentColor.opacity(0.08) : Color.secondary.opacity(0.06))
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .opacity(account.enabled ? 1 : 0.55)
     }
+}
+
+private func resetTicketSummary(_ tickets: ResetTicketDisplay) -> String {
+    guard tickets.availableCount > 0 else { return "초기화권 없음" }
+    guard let expiry = tickets.earliestExpiry else { return "초기화권 \(tickets.availableCount)개" }
+    return "초기화권 \(tickets.availableCount)개 · \(expiry.formatted(date: .abbreviated, time: .omitted)) 만료"
 }
 
 private struct QuotaWindowRow: View {

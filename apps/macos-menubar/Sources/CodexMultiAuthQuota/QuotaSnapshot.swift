@@ -16,9 +16,18 @@ public struct QuotaSnapshot: Decodable, Equatable {
         return snapshot
     }
 
-    public func displayAccounts(now: Date) -> [QuotaDisplayAccount] {
+    public func displayAccounts(
+        now: Date,
+        resetTicketsByIndex: [Int: ResetTicketDisplay] = [:]
+    ) -> [QuotaDisplayAccount] {
         accounts.sorted { $0.index < $1.index }
-            .map { QuotaDisplayAccount(account: $0, now: now) }
+            .map {
+                QuotaDisplayAccount(
+                    account: $0,
+                    now: now,
+                    resetTickets: resetTicketsByIndex[$0.index]
+                )
+            }
     }
 }
 
@@ -93,16 +102,20 @@ public struct QuotaWindow: Decodable, Equatable {
 }
 
 public struct QuotaDisplayAccount: Equatable {
+    public let index: Int
     public let label: String
     public let enabled: Bool
     public let current: Bool
     public let quota: QuotaDisplay?
+    public let resetTickets: ResetTicketDisplay?
 
-    init(account: QuotaAccount, now: Date) {
+    init(account: QuotaAccount, now: Date, resetTickets: ResetTicketDisplay?) {
+        index = account.index
         label = Self.emailLabel(from: account.label)
         enabled = account.enabled
         current = account.current
         quota = account.quota.map { QuotaDisplay(quota: $0, now: now) }
+        self.resetTickets = resetTickets
     }
 
     private static func emailLabel(from label: String) -> String {
@@ -128,4 +141,41 @@ public struct QuotaWindowDisplay: Equatable {
     public let remainingPercent: Int?
     public let windowText: String
     public let resetText: String?
+}
+
+public struct ResetTicketSnapshot: Decodable, Equatable {
+    public let availableCount: Int?
+    public let credits: [ResetTicket]
+
+    public static func decode(data: Data) throws -> ResetTicketSnapshot {
+        try JSONDecoder().decode(ResetTicketSnapshot.self, from: data)
+    }
+
+    public func display(now: Date) -> ResetTicketDisplay {
+        let redeemable = credits.compactMap { ticket -> (ResetTicket, Date)? in
+            guard ticket.isAvailable, let expiry = ticket.expiryDate, expiry > now else { return nil }
+            return (ticket, expiry)
+        }
+        return ResetTicketDisplay(
+            availableCount: redeemable.count,
+            earliestExpiry: redeemable.map(\.1).min()
+        )
+    }
+}
+
+public struct ResetTicket: Decodable, Equatable {
+    public let id: String
+    public let status: String
+    public let isAvailable: Bool
+    public let expiresAt: String?
+
+    fileprivate var expiryDate: Date? {
+        guard let expiresAt else { return nil }
+        return ISO8601DateFormatter().date(from: expiresAt)
+    }
+}
+
+public struct ResetTicketDisplay: Equatable {
+    public let availableCount: Int
+    public let earliestExpiry: Date?
 }

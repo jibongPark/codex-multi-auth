@@ -257,8 +257,14 @@ refresh (`codex-multi-auth limits --json --refresh`); it retains the CLI's
 five-minute freshness floor. A failed refresh preserves the last displayed values
 and shows an error, so those values may be stale.
 
-The companion consumes only the quota JSON contract with masked labels. It does
-not read account credential files, receive tokens, or display unmasked emails.
+When the popover opens, it also asks the CLI for each enabled account's reset-ticket
+status. Each account card compactly shows the usable ticket count and nearest expiry.
+The background 60-second quota poll never makes these ticket requests. **초기화** shows
+a native confirmation with the masked account and expiry, then redeems one ticket only
+for that account and refreshes its display.
+
+The companion consumes only masked CLI JSON contracts. It does not read account
+credential files, receive tokens, or display unmasked emails.
 The current marker reflects configured routing, which can differ from the account
 selected for a live request. Account switching and login remain in the CLI.
 Uninstall stops the companion and removes only its app bundle and LaunchAgent;

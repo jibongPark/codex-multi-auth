@@ -30,6 +30,7 @@ const AUTH_SUBCOMMANDS = new Set([
 	"config",
 	"init-config",
 	"debug",
+	"reset",
 ]);
 
 /**

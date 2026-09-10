@@ -6,7 +6,7 @@ Complete command, flag, and hotkey reference for `codex-multi-auth` (package `2.
 
 ## Published binaries
 
-The package ships four `bin` entrypoints:
+The package ships five `bin` entrypoints:
 
 | Binary | Role |
 | --- | --- |
@@ -14,6 +14,7 @@ The package ships four `bin` entrypoints:
 | `codex-multi-auth-codex` | Forwarding wrapper: handles `auth ...` locally; forwards every other command to the official `@openai/codex` CLI, with optional runtime rotation and `--account` pinning |
 | `codex-multi-auth-app-launcher` | User-level packaged Codex app launcher routing helper (Windows shortcuts, macOS wrapper app, Linux `.desktop`) |
 | `mcodex` | Convenience launcher over `codex-multi-auth-codex` with optional `--monitor` and `--tmux` modes |
+| `codex-reset` | Inspect or consume a managed account's Codex rate-limit reset ticket |
 
 See also [public-api.md](public-api.md) for Tier A surface and stability.
 
@@ -162,6 +163,12 @@ and five-minute freshness floor as the CLI. Countdown updates do not imply a
 fresh provider quota reading. On errors, the last successful snapshot remains
 visible with an error message.
 
+When the popover opens, the companion also runs `codex-multi-auth reset account=<n>
+format=json` for each enabled account. Account cards show the usable reset-ticket
+count and nearest expiry. This is not part of the 60-second cached quota poll.
+An enabled **초기화** button opens a native confirmation that names the masked account
+and expiry; confirmation redeems one ticket only for that row and then refreshes it.
+
 The companion receives only the quota JSON contract, including already-masked
 labels; it does not open credential files, receive OAuth tokens, or display raw
 account emails. Its current-account indicator follows `selection.routedIndex`,
@@ -189,6 +196,32 @@ return exit code 1. Build, signing, or launch failures also return 1; inspect
 | `codex-multi-auth best` | Pick and optionally sync the best account (clears any manual pin) |
 | `codex-multi-auth account ...` | Manage local account policy metadata |
 | `codex-multi-auth workspace <account> [workspace]` | List an account's tracked workspaces, or set its active workspace |
+
+---
+
+## `codex-reset`
+
+Lists or consumes Codex rate-limit reset tickets for one managed account. It uses the same
+saved account pool as `codex-multi-auth`; it does not patch the Codex desktop app.
+
+```bash
+codex-reset
+codex-reset account=2
+codex-reset action=consume account=2 confirm=true
+codex-reset action=consume account=2 creditId=RateLimitResetCredit_1 confirm=true
+codex-reset action=consume account=2 dryRun=true format=json
+```
+
+All inputs use `key=value`: `action=status|consume` (default `status`), `account` (optional
+1-based index; default active account), `creditId`, `confirm=true|false`,
+`dryRun=true|false`, `format=text|json`, and `includeSensitive=true|false`.
+
+`consume` is preview-only until `confirm=true`; `dryRun=true` is always preview-only. Without
+`creditId`, the command selects the available ticket with the **earliest valid expiry**. Equal
+expiry times are ordered by ticket ID; expired, missing, or unreadable expiries are not eligible.
+A confirmed successful redemption clears only
+that account's locally stored rate-limit/cooldown state; restart a running runtime proxy or the
+Codex app if it has already retained old state in memory.
 
 > Sticky session affinity: `switch`, `unpin`, and `best` all bump an
 > `affinityGeneration` counter in storage that the runtime rotation proxy

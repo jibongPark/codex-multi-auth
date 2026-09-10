@@ -13,12 +13,14 @@ describe("package bin entries", () => {
 		expect(pkg.bin?.["codex-multi-auth-codex"]).toBe("scripts/codex.js");
 		expect(pkg.bin?.["codex-multi-auth-app-launcher"]).toBe("scripts/codex-app-launcher.js");
 		expect(pkg.bin?.["codex-multi-auth"]).toBe("scripts/codex-multi-auth.js");
+		expect(pkg.bin?.["codex-reset"]).toBe("scripts/codex-reset.js");
 		expect(pkg.bin?.["codex-multi-auth-opencode-install"]).toBeUndefined();
 		expect(pkg.files).toEqual(
 			expect.arrayContaining([
 				".codex-plugin/plugin.json",
 				"vendor/codex-ai-plugin/",
 				"vendor/codex-ai-sdk/",
+				"scripts/codex-reset.js",
 			]),
 		);
 		expect(pkg.bundleDependencies).toEqual(expect.arrayContaining(["@codex-ai/plugin"]));
@@ -70,4 +72,3 @@ describe("package bin entries", () => {
 		);
 	});
 });
-

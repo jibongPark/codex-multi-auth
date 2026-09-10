@@ -16,6 +16,20 @@ private let validSnapshotData = Data(#"""
 }
 """#.utf8)
 
+private let validResetTicketData = Data(#"""
+{
+  "command": "reset",
+  "action": "status",
+  "availableCount": 1,
+  "credits": [{
+    "id": "ticket-1",
+    "status": "available",
+    "isAvailable": true,
+    "expiresAt": "2027-01-01T00:00:00Z"
+  }]
+}
+"""#.utf8)
+
 private enum TestCommandError: Error {
     case timedOut
 }
@@ -88,6 +102,51 @@ func cachedUpdateUsesSafeLimitsCommand() async {
 
     #expect(await executor.commands == [["limits", "--json"]])
     #expect(await executor.timeouts == [.seconds(10)])
+}
+
+@MainActor
+@Test("reset tickets load only through an explicit per-account request")
+func resetTicketsUseAccountScopedCommand() async {
+    let executor = RecordingExecutor(results: [
+        .success(validSnapshotData),
+        .success(validResetTicketData),
+    ])
+    let model = QuotaDashboardModel(executor: executor)
+
+    await model.loadCached()
+    await model.loadResetTickets()
+
+    #expect(await executor.commands == [
+        ["limits", "--json"],
+        ["reset", "account=1", "format=json"],
+    ])
+    #expect(model.accounts.first?.resetTickets?.availableCount == 1)
+}
+
+@MainActor
+@Test("redeeming a reset ticket targets only the selected account")
+func redeemResetTicketUsesSelectedAccount() async throws {
+    let executor = RecordingExecutor(results: [
+        .success(validSnapshotData),
+        .success(validResetTicketData),
+        .success(Data(#"{"redeemed":true}"#.utf8)),
+        .success(validSnapshotData),
+        .success(validResetTicketData),
+    ])
+    let model = QuotaDashboardModel(executor: executor)
+    await model.loadCached()
+    await model.loadResetTickets()
+    let account = try #require(model.accounts.first)
+
+    await model.redeemResetTicket(for: account)
+
+    #expect(await executor.commands == [
+        ["limits", "--json"],
+        ["reset", "account=1", "format=json"],
+        ["reset", "action=consume", "account=1", "confirm=true", "format=json"],
+        ["limits", "--json", "--refresh"],
+        ["reset", "account=1", "format=json"],
+    ])
 }
 
 @MainActor

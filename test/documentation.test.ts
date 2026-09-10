@@ -127,6 +127,14 @@ function read(filePath: string): string {
 	return readFileSync(join(projectRoot, filePath), "utf-8");
 }
 
+describe("reset ticket documentation", () => {
+	it("documents the standalone reset command and earliest-expiry policy", () => {
+		const commands = read("docs/reference/commands.md");
+		expect(commands).toContain("codex-reset action=consume account=2 confirm=true");
+		expect(commands).toContain("earliest valid expiry");
+	});
+});
+
 function extractInternalLinks(markdown: string): string[] {
 	return [...markdown.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)]
 		.map((match) => match[1])
@@ -832,6 +840,7 @@ describe("Documentation Integrity", () => {
 			"codex-multi-auth-app-launcher": "scripts/codex-app-launcher.js",
 			"codex-multi-auth-codex": "scripts/codex.js",
 			"codex-multi-auth": "scripts/codex-multi-auth.js",
+			"codex-reset": "scripts/codex-reset.js",
 		});
 		// Every declared bin must also be published via files[]; otherwise npm can
 		// ship a package whose bin points at a missing shim (e.g. mcodex) while this
