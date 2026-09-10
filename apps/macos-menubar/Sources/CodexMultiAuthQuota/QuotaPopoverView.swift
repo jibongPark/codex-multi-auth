@@ -3,7 +3,6 @@ import SwiftUI
 
 enum QuotaPopoverLayout {
     static let accountListMinimumHeight: CGFloat = 110
-    static let accountListMaximumHeight: CGFloat = 420
 }
 
 struct QuotaPopoverView: View {
@@ -45,7 +44,7 @@ struct QuotaPopoverView: View {
             if let currentAccount = model.accounts.first(where: \.current) {
                 Text(currentAccount.label)
                     .font(.headline)
-                    .lineLimit(2)
+                    .lineLimit(1)
             } else if model.accounts.isEmpty {
                 Text("연결된 계정이 없습니다")
                     .foregroundStyle(.secondary)
@@ -67,16 +66,14 @@ struct QuotaPopoverView: View {
                         .frame(maxWidth: .infinity)
                 }
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 10) {
-                        ForEach(Array(model.accounts.enumerated()), id: \.offset) { _, account in
-                            AccountQuotaRow(account: account)
-                        }
+                VStack(spacing: 6) {
+                    ForEach(Array(model.accounts.enumerated()), id: \.offset) { _, account in
+                        AccountQuotaRow(account: account)
                     }
                 }
                 .frame(
                     minHeight: QuotaPopoverLayout.accountListMinimumHeight,
-                    maxHeight: QuotaPopoverLayout.accountListMaximumHeight
+                    alignment: .top
                 )
             }
         }
@@ -111,11 +108,11 @@ private struct AccountQuotaRow: View {
     let account: QuotaDisplayAccount
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
                 Text(account.label)
                     .fontWeight(account.current ? .semibold : .regular)
-                    .lineLimit(2)
+                    .lineLimit(1)
                 Spacer(minLength: 8)
                 if account.current {
                     Text("현재")
@@ -149,7 +146,7 @@ private struct AccountQuotaRow: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(10)
+        .padding(8)
         .background(account.current ? Color.accentColor.opacity(0.08) : Color.secondary.opacity(0.06))
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .opacity(account.enabled ? 1 : 0.55)
@@ -162,7 +159,7 @@ private struct QuotaWindowRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack {
-                Text(window.windowText)
+                Text("\(window.windowText) (\(window.resetText ?? "시간 미정"))")
                     .font(.caption)
                 Spacer()
                 if let remainingPercent = window.remainingPercent {
@@ -177,12 +174,6 @@ private struct QuotaWindowRow: View {
 
             if let remainingPercent = window.remainingPercent {
                 ProgressView(value: Double(remainingPercent), total: 100)
-            }
-
-            if let resetText = window.resetText {
-                Text(resetText)
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.secondary)
             }
         }
     }

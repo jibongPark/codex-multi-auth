@@ -42,8 +42,28 @@ func currentAccountIsFirst() throws {
     let snapshot = try QuotaSnapshot.decode(data: fixture(validLimitsJSON))
 
     #expect(snapshot.displayAccounts(now: .now).map(\.label) == [
-        "Personal (a***@example.com)", "Work (b***@example.com)"
+        "a***@example.com", "b***@example.com"
     ])
+}
+
+@Test("shows only the email portion of an account label")
+func displayAccountHidesRoleAndIdentifierMetadata() throws {
+    let snapshot = try QuotaSnapshot.decode(data: fixture(#"""
+    {
+      "schemaVersion": 1,
+      "accounts": [{
+        "index": 0,
+        "label": "Account 3 (Personal (role:owner) [id:opaque-id], user***@example.com, id:another-opaque-id)",
+        "enabled": true,
+        "current": true,
+        "quota": null
+      }]
+    }
+    """#))
+
+    let account = try #require(snapshot.displayAccounts(now: .now).first)
+
+    #expect(account.label == "user***@example.com")
 }
 
 @Test("rejects a limits schema version the companion does not support")
@@ -131,11 +151,18 @@ func formatsResetCountdown() {
     let now = Date(timeIntervalSince1970: 1_000)
     let window = QuotaWindow(usedPercent: 25, windowMinutes: 300, resetAtMs: 1_000_000 + 3_661_000)
 
-    #expect(window.display(now: now).resetText == "01:01 후 재설정")
+    #expect(window.display(now: now).resetText == "01:01")
+}
+
+@Test("formats a multi-day reset countdown for a weekly quota")
+func formatsWeeklyResetCountdown() {
+    let now = Date(timeIntervalSince1970: 1_000)
+    let window = QuotaWindow(usedPercent: 25, windowMinutes: 10_080, resetAtMs: 1_000_000 + 90_061_000)
+
+    #expect(window.display(now: now).resetText == "1일 01:01")
 }
 
 @Test("reserves visible space for the loaded account quota list")
 func quotaAccountListReservesVisibleHeight() {
     #expect(QuotaPopoverLayout.accountListMinimumHeight == 110)
-    #expect(QuotaPopoverLayout.accountListMaximumHeight == 420)
 }

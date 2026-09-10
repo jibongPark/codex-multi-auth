@@ -55,7 +55,7 @@ public struct QuotaWindow: Decodable, Equatable {
         }
         let resetText = resetAtMs.map { resetAtMs in
             let seconds = max(0, Int((Double(resetAtMs) / 1_000 - now.timeIntervalSince1970).rounded(.down)))
-            return String(format: "%02d:%02d 후 재설정", seconds / 3_600, (seconds % 3_600) / 60)
+            return Self.resetCountdownText(seconds: seconds, windowMinutes: windowMinutes)
         }
         return QuotaWindowDisplay(
             remainingPercent: remainingPercent,
@@ -79,6 +79,17 @@ public struct QuotaWindow: Decodable, Equatable {
             return "\(minutes)분"
         }
     }
+
+    private static func resetCountdownText(seconds: Int, windowMinutes: Int?) -> String {
+        let minutes = (seconds % 3_600) / 60
+        guard windowMinutes.map({ $0 >= 1_440 }) == true else {
+            return String(format: "%02d:%02d", seconds / 3_600, minutes)
+        }
+
+        let days = seconds / 86_400
+        let hours = (seconds % 86_400) / 3_600
+        return String(format: "%d일 %02d:%02d", days, hours, minutes)
+    }
 }
 
 public struct QuotaDisplayAccount: Equatable {
@@ -88,10 +99,18 @@ public struct QuotaDisplayAccount: Equatable {
     public let quota: QuotaDisplay?
 
     init(account: QuotaAccount, now: Date) {
-        label = account.label
+        label = Self.emailLabel(from: account.label)
         enabled = account.enabled
         current = account.current
         quota = account.quota.map { QuotaDisplay(quota: $0, now: now) }
+    }
+
+    private static func emailLabel(from label: String) -> String {
+        let pattern = #"[A-Za-z0-9._%+*-]+@[A-Za-z0-9*.-]+\.[A-Za-z]{2,}"#
+        guard let range = label.range(of: pattern, options: .regularExpression) else {
+            return "이메일 정보 없음"
+        }
+        return String(label[range])
     }
 }
 
