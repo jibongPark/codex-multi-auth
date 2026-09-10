@@ -165,4 +165,5 @@ func formatsWeeklyResetCountdown() {
 @Test("reserves visible space for the loaded account quota list")
 func quotaAccountListReservesVisibleHeight() {
     #expect(QuotaPopoverLayout.accountListMinimumHeight == 110)
+    #expect(QuotaPopoverLayout.accountListMaximumHeight == 320)
 }

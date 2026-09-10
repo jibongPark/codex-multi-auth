@@ -3,6 +3,7 @@ import SwiftUI
 
 enum QuotaPopoverLayout {
     static let accountListMinimumHeight: CGFloat = 110
+    static let accountListMaximumHeight: CGFloat = 320
 }
 
 struct QuotaPopoverView: View {
@@ -66,13 +67,16 @@ struct QuotaPopoverView: View {
                         .frame(maxWidth: .infinity)
                 }
             } else {
-                VStack(spacing: 6) {
-                    ForEach(Array(model.accounts.enumerated()), id: \.offset) { _, account in
-                        AccountQuotaRow(account: account)
+                ScrollView {
+                    LazyVStack(spacing: 6) {
+                        ForEach(Array(model.accounts.enumerated()), id: \.offset) { _, account in
+                            AccountQuotaRow(account: account)
+                        }
                     }
                 }
                 .frame(
                     minHeight: QuotaPopoverLayout.accountListMinimumHeight,
+                    maxHeight: QuotaPopoverLayout.accountListMaximumHeight,
                     alignment: .top
                 )
             }
