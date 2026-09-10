@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 enum QuotaPopoverLayout {
-    static let accountListMinimumHeight: CGFloat = 110
+    static let accountListMinimumHeight: CGFloat = 260
     static let accountListMaximumHeight: CGFloat = 320
 }
 
@@ -68,7 +68,7 @@ struct QuotaPopoverView: View {
                 }
             } else {
                 ScrollView {
-                    LazyVStack(spacing: 6) {
+                    LazyVStack(spacing: 4) {
                         ForEach(Array(model.accounts.enumerated()), id: \.offset) { _, account in
                             AccountQuotaRow(account: account)
                         }
@@ -112,7 +112,7 @@ private struct AccountQuotaRow: View {
     let account: QuotaDisplayAccount
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline) {
                 Text(account.label)
                     .fontWeight(account.current ? .semibold : .regular)
@@ -150,7 +150,7 @@ private struct AccountQuotaRow: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(8)
+        .padding(6)
         .background(account.current ? Color.accentColor.opacity(0.08) : Color.secondary.opacity(0.06))
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .opacity(account.enabled ? 1 : 0.55)
@@ -178,6 +178,7 @@ private struct QuotaWindowRow: View {
 
             if let remainingPercent = window.remainingPercent {
                 ProgressView(value: Double(remainingPercent), total: 100)
+                    .controlSize(.mini)
             }
         }
     }
