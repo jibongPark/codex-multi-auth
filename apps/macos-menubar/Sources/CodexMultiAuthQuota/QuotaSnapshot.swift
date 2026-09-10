@@ -17,7 +17,7 @@ public struct QuotaSnapshot: Decodable, Equatable {
     }
 
     public func displayAccounts(now: Date) -> [QuotaDisplayAccount] {
-        accounts.sorted { $0.current && !$1.current }
+        accounts.sorted { $0.index < $1.index }
             .map { QuotaDisplayAccount(account: $0, now: now) }
     }
 }

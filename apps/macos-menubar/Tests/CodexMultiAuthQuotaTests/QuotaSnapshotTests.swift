@@ -37,12 +37,30 @@ private func fixture(_ string: String) -> Data {
     Data(string.utf8)
 }
 
-@Test("places the configured current account before every other account")
-func currentAccountIsFirst() throws {
+@Test("orders display accounts by their configured number")
+func displayAccountsUseConfiguredNumberOrder() throws {
     let snapshot = try QuotaSnapshot.decode(data: fixture(validLimitsJSON))
 
     #expect(snapshot.displayAccounts(now: .now).map(\.label) == [
         "a***@example.com", "b***@example.com"
+    ])
+}
+
+@Test("keeps numerical account order when a later account is active")
+func displayAccountsKeepNumericalOrder() throws {
+    let snapshot = try QuotaSnapshot.decode(data: fixture(#"""
+    {
+      "schemaVersion": 1,
+      "accounts": [
+        { "index": 2, "label": "third@example.com", "enabled": true, "current": false, "quota": null },
+        { "index": 0, "label": "first@example.com", "enabled": true, "current": false, "quota": null },
+        { "index": 1, "label": "second@example.com", "enabled": true, "current": true, "quota": null }
+      ]
+    }
+    """#))
+
+    #expect(snapshot.displayAccounts(now: .now).map(\.label) == [
+        "first@example.com", "second@example.com", "third@example.com"
     ])
 }
 
