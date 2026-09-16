@@ -12,6 +12,21 @@ enum QuotaCommandError: Error {
     case timedOut
 }
 
+func consumeAvailableOutput(from handle: FileHandle, append: (Data) -> Void) -> Bool {
+    let chunk = handle.availableData
+    guard !chunk.isEmpty else { return false }
+    append(chunk)
+    return true
+}
+
+func observeAvailableOutput(from handle: FileHandle, append: @escaping (Data) -> Void) {
+    handle.readabilityHandler = { handle in
+        if !consumeAvailableOutput(from: handle, append: append) {
+            handle.readabilityHandler = nil
+        }
+    }
+}
+
 @MainActor
 func executeTerminalScript(_ script: NSAppleScript?) throws {
     guard let script else { throw QuotaCommandError.processFailed }
@@ -49,12 +64,7 @@ struct ProcessQuotaCommandExecutor: QuotaCommandExecuting {
             process.standardOutput = stdout
             process.standardError = FileHandle.nullDevice
 
-            stdout.fileHandleForReading.readabilityHandler = { handle in
-                let chunk = handle.availableData
-                if !chunk.isEmpty {
-                    output.append(chunk)
-                }
-            }
+            observeAvailableOutput(from: stdout.fileHandleForReading, append: output.append)
 
             do {
                 try process.run()

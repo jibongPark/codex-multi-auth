@@ -130,10 +130,9 @@ export async function runMenubarCommand(args: string[], deps: MenubarCommandDeps
 			? resolve(npmModules, "..", "..", "bin") : "";
 		const path = [...new Set([dirname(deps.execPath ?? process.execPath), npmBin, ...(deps.path ?? process.env.PATH ?? "").split(":"), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"].filter(Boolean))].join(":");
 		await makeDirectory(dirname(agent), { recursive: true });
-		await write(agent, plistDocument(`<key>Label</key><string>${LABEL}</string>\n<key>ProgramArguments</key><array><string>${xml(binary)}</string></array>\n<key>RunAtLoad</key><true/>\n<key>EnvironmentVariables</key><dict><key>PATH</key><string>${xml(path)}</string></dict>`));
-		await run("launchctl", ["bootstrap", `gui/${uid}`, agent]);
-		await run("open", [app]);
-		log(current
+			await write(agent, plistDocument(`<key>Label</key><string>${LABEL}</string>\n<key>ProgramArguments</key><array><string>${xml(binary)}</string></array>\n<key>RunAtLoad</key><true/>\n<key>EnvironmentVariables</key><dict><key>PATH</key><string>${xml(path)}</string></dict>`));
+			await run("launchctl", ["bootstrap", `gui/${uid}`, agent]);
+			log(current
 			? "Menu bar companion already current; installation and login startup renewed."
 			: `Menu bar companion ${installed ? "updated" : "installed"} and configured to start at login.`);
 		return 0;

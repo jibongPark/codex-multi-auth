@@ -56,6 +56,18 @@ private enum TestCommandError: Error {
     case timedOut
 }
 
+@Test("stdout observation removes its handler at EOF without appending empty data")
+func stdoutObservationStopsAtEOF() async throws {
+    let pipe = Pipe()
+    observeAvailableOutput(from: pipe.fileHandleForReading) { _ in
+        Issue.record("EOF must not append data")
+    }
+    pipe.fileHandleForWriting.closeFile()
+
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(pipe.fileHandleForReading.readabilityHandler == nil)
+}
+
 private actor RecordingExecutor: QuotaCommandExecuting {
     private(set) var commands: [[String]] = []
     private(set) var timeouts: [Duration] = []
