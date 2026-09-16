@@ -16,16 +16,11 @@ struct CodexMultiAuthQuotaApp: App {
         MenuBarExtra {
             QuotaPopoverView(model: model)
                 .task {
-                    model.updateCountdowns()
-                    await model.loadCached()
-                    await model.loadResetTickets()
+                    await model.refreshWhenOpened()
                 }
         } label: {
             Image(systemName: "gauge.with.dots.needle.67percent")
                 .accessibilityLabel("Codex Multi Auth quota dashboard")
-                .task {
-                    await model.monitorCachedQuota()
-                }
         }
         .menuBarExtraStyle(.window)
     }
