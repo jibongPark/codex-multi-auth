@@ -30,6 +30,28 @@ private let validResetTicketData = Data(#"""
 }
 """#.utf8)
 
+private let validTwoAccountSnapshotData = Data(#"""
+{
+  "schemaVersion": 1,
+  "accounts": [
+    {
+      "index": 0,
+      "label": "Personal (a***@example.com)",
+      "enabled": true,
+      "current": true,
+      "quota": null
+    },
+    {
+      "index": 1,
+      "label": "Personal (b***@example.com)",
+      "enabled": true,
+      "current": false,
+      "quota": null
+    }
+  ]
+}
+"""#.utf8)
+
 private enum TestCommandError: Error {
     case timedOut
 }
@@ -103,6 +125,71 @@ private actor DelayedQuotaThenResetExecutor: QuotaCommandExecuting {
     }
 }
 
+private actor CancellationOnResetExecutor: QuotaCommandExecuting {
+    private var resetRequested = false
+
+    func run(arguments: [String], timeout: Duration) async throws -> Data {
+        if arguments.first == "limits" {
+            return validSnapshotData
+        }
+
+        resetRequested = true
+        while !Task.isCancelled {
+            await Task.yield()
+        }
+        throw CancellationError()
+    }
+
+    func waitUntilResetRequested() async {
+        while !resetRequested {
+            await Task.yield()
+        }
+    }
+}
+
+private actor CancellationOnQuotaExecutor: QuotaCommandExecuting {
+    private var quotaRequested = false
+
+    func run(arguments: [String], timeout: Duration) async throws -> Data {
+        quotaRequested = true
+        while !Task.isCancelled {
+            await Task.yield()
+        }
+        throw CancellationError()
+    }
+
+    func waitUntilQuotaRequested() async {
+        while !quotaRequested {
+            await Task.yield()
+        }
+    }
+}
+
+private actor ResetFailureThenCancellationExecutor: QuotaCommandExecuting {
+    private var resetRequestCount = 0
+
+    func run(arguments: [String], timeout: Duration) async throws -> Data {
+        if arguments.first == "limits" {
+            return validTwoAccountSnapshotData
+        }
+
+        resetRequestCount += 1
+        if resetRequestCount == 1 {
+            throw TestCommandError.timedOut
+        }
+        while !Task.isCancelled {
+            await Task.yield()
+        }
+        throw CancellationError()
+    }
+
+    func waitUntilSecondResetRequested() async {
+        while resetRequestCount < 2 {
+            await Task.yield()
+        }
+    }
+}
+
 @MainActor
 @Test("Terminal AppleScript failure is sanitized and a successful retry clears it")
 func terminalFailureIsSanitized() {
@@ -128,6 +215,71 @@ func cachedUpdateUsesSafeLimitsCommand() async {
 
     #expect(await executor.commands == [["limits", "--json"]])
     #expect(await executor.timeouts == [.seconds(10)])
+}
+
+@MainActor
+@Test("opening the dashboard refreshes quota without starting a polling loop")
+func openingDashboardUsesTheManualRefreshCommand() async {
+    let executor = RecordingExecutor(results: [
+        .success(validSnapshotData),
+        .success(validResetTicketData),
+    ])
+    let model = QuotaDashboardModel(executor: executor)
+
+    await model.refreshWhenOpened()
+
+    #expect(await executor.commands == [
+        ["limits", "--json", "--refresh"],
+        ["reset", "account=1", "format=json"],
+    ])
+}
+
+@MainActor
+@Test("cancelling an open-dashboard refresh does not show a reset ticket error")
+func cancellingOpenDashboardRefreshDoesNotShowResetTicketError() async {
+    let executor = CancellationOnResetExecutor()
+    let model = QuotaDashboardModel(executor: executor)
+    let refreshTask = Task { @MainActor in
+        await model.refreshWhenOpened()
+    }
+    await executor.waitUntilResetRequested()
+
+    refreshTask.cancel()
+    await refreshTask.value
+
+    #expect(model.resetTicketsErrorMessage == nil)
+}
+
+@MainActor
+@Test("cancelling an open-dashboard quota refresh does not show a quota error")
+func cancellingOpenDashboardRefreshDoesNotShowQuotaError() async {
+    let executor = CancellationOnQuotaExecutor()
+    let model = QuotaDashboardModel(executor: executor)
+    let refreshTask = Task { @MainActor in
+        await model.refreshWhenOpened()
+    }
+    await executor.waitUntilQuotaRequested()
+
+    refreshTask.cancel()
+    await refreshTask.value
+
+    #expect(model.errorMessage == nil)
+}
+
+@MainActor
+@Test("a reset ticket failure remains visible when a later request is cancelled")
+func resetTicketFailureRemainsVisibleAfterLaterCancellation() async {
+    let executor = ResetFailureThenCancellationExecutor()
+    let model = QuotaDashboardModel(executor: executor)
+    let refreshTask = Task { @MainActor in
+        await model.refreshWhenOpened()
+    }
+    await executor.waitUntilSecondResetRequested()
+
+    refreshTask.cancel()
+    await refreshTask.value
+
+    #expect(model.resetTicketsErrorMessage == "초기화권 정보를 불러오지 못했습니다. 다시 시도해 주세요.")
 }
 
 @MainActor

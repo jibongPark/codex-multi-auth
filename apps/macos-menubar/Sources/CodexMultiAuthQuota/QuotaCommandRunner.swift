@@ -169,6 +169,10 @@ final class QuotaDashboardModel: ObservableObject {
         }
     }
 
+    func refreshWhenOpened() async {
+        await refresh()
+    }
+
     func loadResetTickets() async {
         guard !isLoadingResetTickets else { return }
         guard !isRefreshing else {
@@ -181,6 +185,7 @@ final class QuotaDashboardModel: ObservableObject {
 
         var next = resetTicketsByIndex
         var hasFailure = false
+        var wasCancelled = false
         for account in snapshot.accounts where account.enabled {
             do {
                 let data = try await executor.run(
@@ -188,15 +193,20 @@ final class QuotaDashboardModel: ObservableObject {
                     timeout: .seconds(10)
                 )
                 next[account.index] = try ResetTicketSnapshot.decode(data: data).display(now: now())
+            } catch is CancellationError {
+                wasCancelled = true
+                break
             } catch {
                 hasFailure = true
             }
         }
         resetTicketsByIndex = next
         updateCountdowns()
-        resetTicketsErrorMessage = hasFailure
-            ? "초기화권 정보를 불러오지 못했습니다. 다시 시도해 주세요."
-            : nil
+        if !wasCancelled || hasFailure {
+            resetTicketsErrorMessage = hasFailure
+                ? "초기화권 정보를 불러오지 못했습니다. 다시 시도해 주세요."
+                : nil
+        }
     }
 
     func redeemResetTicket(for account: QuotaDisplayAccount) async {
@@ -247,19 +257,6 @@ final class QuotaDashboardModel: ObservableObject {
         accounts = snapshot.displayAccounts(now: now(), resetTicketsByIndex: resetTicketsByIndex)
     }
 
-    func monitorCachedQuota() async {
-        await loadCached()
-        while !Task.isCancelled {
-            do {
-                try await Task.sleep(for: .seconds(60))
-            } catch {
-                return
-            }
-            updateCountdowns()
-            await loadCached()
-        }
-    }
-
     private func load(arguments: [String], timeout: Duration) async -> Bool {
         guard !isRefreshing else { return false }
         isRefreshing = true
@@ -272,6 +269,8 @@ final class QuotaDashboardModel: ObservableObject {
             updateCountdowns()
             errorMessage = nil
             return true
+        } catch is CancellationError {
+            return false
         } catch {
             errorMessage = Self.loadingError
             return false
