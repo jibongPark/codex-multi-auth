@@ -29,6 +29,8 @@ Use it when you need a local Codex CLI multi-account workflow with visible accou
 - Local usage ledger, budget guards, account policy controls, routing profiles, and model/account capability views
 - Runtime counters, budget/cooldown state, and multi-auth probe visibility in `codex-multi-auth status` / `codex-multi-auth report`
 - Default-on loopback Responses proxy for live account rotation inside forwarded Codex CLI/app sessions
+- [Image generation/edit transport](docs/reference/image-routes.md) through the same authenticated runtime proxy
+- [Built-in image_gen provider compatibility](docs/reference/imagegen-provider-compatibility.md) through the same authenticated runtime proxy
 - Optional loopback-only local bridge for `/health`, `/v1/models`, and `/v1/responses`, protected by hashed local client tokens
 - Reversible packaged Codex app bind and user-level launcher routing helpers that do not patch official app binaries
 - Session affinity, live account sync, proactive refresh, and preemptive quota deferral controls
@@ -455,7 +457,7 @@ codex-multi-auth doctor --json
 
 ## Release Notes
 
-- Current stable: [docs/releases/v2.14.0.md](docs/releases/v2.14.0.md) — install via `npm i -g codex-multi-auth`
+- Current stable: [docs/releases/v2.15.0.md](docs/releases/v2.15.0.md) — install via `npm i -g codex-multi-auth`
 - Previous stable: [docs/releases/v2.8.3.md](docs/releases/v2.8.3.md)
 - Previous stable: [docs/releases/v2.8.2.md](docs/releases/v2.8.2.md)
 - Previous stable: [docs/releases/v2.7.1.md](docs/releases/v2.7.1.md)
