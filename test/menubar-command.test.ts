@@ -86,7 +86,7 @@ describe("menubar command", () => {
 		expect(startup).toHaveBeenCalledOnce();
 	});
 
-	it("builds, signs, and starts only the companion bundle and login agent", async () => {
+	it("builds, signs, and starts the companion only through its login agent", async () => {
 		const e = createMenubarEffects();
 		expect(await runMenubarCommand(["install"], e.deps)).toBe(0);
 		expect(e.commands[0]).toEqual(["swift", "build", "--package-path", "/opt/custom/lib/node_modules/codex-multi-auth/apps/macos-menubar", "--configuration", "release", "--product", "CodexMultiAuthQuota"]);
@@ -99,7 +99,7 @@ describe("menubar command", () => {
 		for (const bin of ["/custom/npm/bin", "/opt/custom/bin", "/opt/node/bin", "/usr/bin"]) expect(e.writes.get(plist)).toContain(bin);
 		expect(e.commands).toContainEqual(["codesign", "--force", "--sign", "-", app]);
 		expect(e.commands).toContainEqual(["launchctl", "bootstrap", "gui/501", plist]);
-		expect(e.commands.at(-1)).toEqual(["open", app]);
+		expect(e.commands).not.toContainEqual(["open", app]);
 		expect(e.directories).toEqual([`${app}/Contents/MacOS`, "/Users/test/Library/LaunchAgents"]);
 		expect(e.removed).toEqual([]);
 	});
