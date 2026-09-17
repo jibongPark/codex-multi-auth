@@ -12,18 +12,60 @@ enum QuotaCommandError: Error {
     case timedOut
 }
 
-func consumeAvailableOutput(from handle: FileHandle, append: (Data) -> Void) -> Bool {
-    let chunk = handle.availableData
-    guard !chunk.isEmpty else { return false }
-    append(chunk)
+private let maximumOutputBytesPerDrain = 64 * 1_024
+private let maximumFinalDrainPasses = 16
+
+func makeNonBlocking(_ handle: FileHandle) throws {
+    let descriptor = handle.fileDescriptor
+    let flags = fcntl(descriptor, F_GETFL)
+    guard flags >= 0, fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0 else {
+        throw QuotaCommandError.processFailed
+    }
+}
+
+@discardableResult
+func drainAvailableOutput(from handle: FileHandle, into output: inout Data) throws -> Bool {
+    let descriptor = handle.fileDescriptor
+    var buffer = [UInt8](repeating: 0, count: 8_192)
+    var remaining = maximumOutputBytesPerDrain
+
+    while remaining > 0 {
+        let count = buffer.withUnsafeMutableBytes { bytes in
+            Darwin.read(descriptor, bytes.baseAddress, min(bytes.count, remaining))
+        }
+        if count > 0 {
+            output.append(contentsOf: buffer.prefix(count))
+            remaining -= count
+            continue
+        }
+        if count == 0 || errno == EAGAIN || errno == EWOULDBLOCK {
+            return false
+        }
+        if errno == EINTR {
+            continue
+        }
+        throw QuotaCommandError.processFailed
+    }
+
     return true
 }
 
-func observeAvailableOutput(from handle: FileHandle, append: @escaping (Data) -> Void) {
-    handle.readabilityHandler = { handle in
-        if !consumeAvailableOutput(from: handle, append: append) {
-            handle.readabilityHandler = nil
+func hasAdditionalOutput(from handle: FileHandle) throws -> Bool {
+    let descriptor = handle.fileDescriptor
+    var byte: UInt8 = 0
+
+    while true {
+        let count = Darwin.read(descriptor, &byte, 1)
+        if count > 0 {
+            return true
         }
+        if count == 0 || errno == EAGAIN || errno == EWOULDBLOCK {
+            return false
+        }
+        if errno == EINTR {
+            continue
+        }
+        throw QuotaCommandError.processFailed
     }
 }
 
@@ -55,7 +97,7 @@ struct ProcessQuotaCommandExecutor: QuotaCommandExecuting {
             try Task.checkCancellation()
             let process = Process()
             let stdout = Pipe()
-            let output = LockedDataBuffer()
+            var output = Data()
             process.executableURL = executableURL
             process.arguments = commandArguments
             var environment = ProcessInfo.processInfo.environment
@@ -64,12 +106,11 @@ struct ProcessQuotaCommandExecutor: QuotaCommandExecuting {
             process.standardOutput = stdout
             process.standardError = FileHandle.nullDevice
 
-            observeAvailableOutput(from: stdout.fileHandleForReading, append: output.append)
+            try makeNonBlocking(stdout.fileHandleForReading)
 
             do {
                 try process.run()
             } catch {
-                stdout.fileHandleForReading.readabilityHandler = nil
                 throw QuotaCommandError.processFailed
             }
 
@@ -82,6 +123,7 @@ struct ProcessQuotaCommandExecutor: QuotaCommandExecuting {
                     timedOut = clock.now >= deadline
                     break
                 }
+                try drainAvailableOutput(from: stdout.fileHandleForReading, into: &output)
                 try? await Task.sleep(for: .milliseconds(50))
             }
 
@@ -95,9 +137,7 @@ struct ProcessQuotaCommandExecutor: QuotaCommandExecuting {
                     if process.isRunning {
                         kill(process.processIdentifier, SIGKILL)
                     }
-                    process.waitUntilExit()
                 }
-                stdout.fileHandleForReading.readabilityHandler = nil
                 try? stdout.fileHandleForReading.close()
 
                 if timedOut {
@@ -106,37 +146,29 @@ struct ProcessQuotaCommandExecutor: QuotaCommandExecuting {
                 throw CancellationError()
             }
 
-            process.waitUntilExit()
-            stdout.fileHandleForReading.readabilityHandler = nil
-            output.append(stdout.fileHandleForReading.readDataToEndOfFile())
+            var reachedEndOfOutput = false
+            for _ in 0..<maximumFinalDrainPasses {
+                if try !drainAvailableOutput(from: stdout.fileHandleForReading, into: &output) {
+                    reachedEndOfOutput = true
+                    break
+                }
+            }
+            try? stdout.fileHandleForReading.close()
+
+            guard try reachedEndOfOutput || !hasAdditionalOutput(from: stdout.fileHandleForReading) else {
+                throw QuotaCommandError.processFailed
+            }
 
             guard process.terminationStatus == 0 else {
                 throw QuotaCommandError.processFailed
             }
-            return output.value
+            return output
         }
         return try await withTaskCancellationHandler {
             try await task.value
         } onCancel: {
             task.cancel()
         }
-    }
-}
-
-private final class LockedDataBuffer: @unchecked Sendable {
-    private let lock = NSLock()
-    private var data = Data()
-
-    func append(_ chunk: Data) {
-        lock.lock()
-        data.append(chunk)
-        lock.unlock()
-    }
-
-    var value: Data {
-        lock.lock()
-        defer { lock.unlock() }
-        return data
     }
 }
 

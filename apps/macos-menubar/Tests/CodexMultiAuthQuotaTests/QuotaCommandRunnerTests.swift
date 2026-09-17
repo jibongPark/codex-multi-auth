@@ -56,18 +56,6 @@ private enum TestCommandError: Error {
     case timedOut
 }
 
-@Test("stdout observation removes its handler at EOF without appending empty data")
-func stdoutObservationStopsAtEOF() async throws {
-    let pipe = Pipe()
-    observeAvailableOutput(from: pipe.fileHandleForReading) { _ in
-        Issue.record("EOF must not append data")
-    }
-    pipe.fileHandleForWriting.closeFile()
-
-    try await Task.sleep(for: .milliseconds(100))
-    #expect(pipe.fileHandleForReading.readabilityHandler == nil)
-}
-
 private actor RecordingExecutor: QuotaCommandExecuting {
     private(set) var commands: [[String]] = []
     private(set) var timeouts: [Duration] = []
@@ -461,6 +449,65 @@ func processExecutorIgnoresStderr() async throws {
     let output = try await executor.run(arguments: [], timeout: .seconds(1))
 
     #expect(String(decoding: output, as: UTF8.self) == "visible")
+}
+
+@Test("process executor does not wait for a descendant that keeps stdout open")
+func processExecutorDoesNotWaitForDescendantStdout() async throws {
+    let executor = ProcessQuotaCommandExecutor(
+        executableURL: URL(fileURLWithPath: "/bin/sh"),
+        baseArguments: ["-c", "printf visible; (sleep 2) & exit 0"]
+    )
+    let clock = ContinuousClock()
+    let start = clock.now
+
+    let output = try await executor.run(arguments: [], timeout: .seconds(1))
+
+    #expect(String(decoding: output, as: UTF8.self) == "visible")
+    #expect(start.duration(to: clock.now) < .seconds(1))
+}
+
+@Test("process executor preserves a completed command's buffered stdout")
+func processExecutorPreservesCompletedBufferedStdout() async throws {
+    let executor = ProcessQuotaCommandExecutor(
+        executableURL: URL(fileURLWithPath: "/bin/sh"),
+        baseArguments: ["-c", "dd if=/dev/zero bs=131072 count=1 2>/dev/null | tr '\\0' x"]
+    )
+
+    let output = try await executor.run(arguments: [], timeout: .seconds(1))
+
+    #expect(output.count == 131_072)
+    #expect(output.allSatisfy { $0 == Character("x").asciiValue })
+}
+
+@Test("process executor accepts output that exactly fills its final drain limit")
+func processExecutorAcceptsExactFinalDrainLimit() async throws {
+    let executor = ProcessQuotaCommandExecutor(
+        executableURL: URL(fileURLWithPath: "/bin/sh"),
+        baseArguments: ["-c", "dd if=/dev/zero bs=1048576 count=1 2>/dev/null | tr '\\0' x"]
+    )
+
+    let output = try await executor.run(arguments: [], timeout: .seconds(2))
+
+    #expect(output.count == 1_048_576)
+}
+
+@Test("process executor enforces its timeout when stdout never stops")
+func processExecutorTimesOutWithContinuousStdout() async {
+    let executor = ProcessQuotaCommandExecutor(
+        executableURL: URL(fileURLWithPath: "/bin/sh"),
+        baseArguments: ["-c", "while :; do printf x; done"]
+    )
+    let clock = ContinuousClock()
+    let start = clock.now
+
+    do {
+        _ = try await executor.run(arguments: [], timeout: .milliseconds(100))
+        Issue.record("Expected continuous stdout to time out")
+    } catch QuotaCommandError.timedOut {
+        #expect(start.duration(to: clock.now) < .seconds(1))
+    } catch {
+        Issue.record("Expected a timeout error")
+    }
 }
 
 @Test("companion supplies a parent-bound setup bypass only to its quota subprocess")
