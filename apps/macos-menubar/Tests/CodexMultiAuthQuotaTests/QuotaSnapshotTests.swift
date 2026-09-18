@@ -42,7 +42,7 @@ func displayAccountsUseConfiguredNumberOrder() throws {
     let snapshot = try QuotaSnapshot.decode(data: fixture(validLimitsJSON))
 
     #expect(snapshot.displayAccounts(now: .now).map(\.label) == [
-        "a***@example.com", "b***@example.com"
+        "a***", "b***"
     ])
 }
 
@@ -60,12 +60,12 @@ func displayAccountsKeepNumericalOrder() throws {
     """#))
 
     #expect(snapshot.displayAccounts(now: .now).map(\.label) == [
-        "first@example.com", "second@example.com", "third@example.com"
+        "first", "second", "third"
     ])
 }
 
-@Test("shows only the email portion of an account label")
-func displayAccountHidesRoleAndIdentifierMetadata() throws {
+@Test("shows only the masked local portion of an account label")
+func displayAccountHidesRoleDomainAndIdentifierMetadata() throws {
     let snapshot = try QuotaSnapshot.decode(data: fixture(#"""
     {
       "schemaVersion": 1,
@@ -81,7 +81,25 @@ func displayAccountHidesRoleAndIdentifierMetadata() throws {
 
     let account = try #require(snapshot.displayAccounts(now: .now).first)
 
-    #expect(account.label == "user***@example.com")
+    #expect(account.label == "user***")
+}
+
+@Test("marks only the account selected by the snapshot pin")
+func displayAccountMarksPinnedSelection() throws {
+    let snapshot = try QuotaSnapshot.decode(data: fixture(#"""
+    {
+      "schemaVersion": 1,
+      "selection": { "pinnedIndex": 1, "activeIndexByFamily": {}, "routedIndex": 1 },
+      "accounts": [
+        { "index": 0, "label": "first***@example.com", "enabled": true, "current": false, "quota": null },
+        { "index": 1, "label": "second***@example.com", "enabled": true, "current": true, "quota": null }
+      ]
+    }
+    """#))
+
+    let accounts = snapshot.displayAccounts(now: .now)
+
+    #expect(accounts.map(\.isPinned) == [false, true])
 }
 
 @Test("rejects a limits schema version the companion does not support")

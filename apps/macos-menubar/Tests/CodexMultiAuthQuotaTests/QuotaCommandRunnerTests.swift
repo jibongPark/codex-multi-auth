@@ -237,6 +237,69 @@ func cachedUpdateUsesSafeLimitsCommand() async {
 }
 
 @MainActor
+@Test("the pin toggle is unavailable while the dashboard refreshes")
+func pinToggleIsUnavailableDuringRefresh() async {
+    let executor = DelayedQuotaThenResetExecutor()
+    let model = QuotaDashboardModel(executor: executor)
+    let refreshTask = Task { @MainActor in
+        await model.refresh()
+    }
+    await executor.waitUntilQuotaRequested()
+
+    #expect(model.isPinToggleDisabled)
+
+    await executor.completeQuotaLoad()
+    await refreshTask.value
+    #expect(!model.isPinToggleDisabled)
+}
+
+@MainActor
+@Test("checking an account pins its one-based index and refreshes the dashboard")
+func pinningAccountUsesSwitchThenRefreshes() async throws {
+    let executor = RecordingExecutor(results: [
+        .success(validSnapshotData),
+        .success(Data()),
+        .success(validSnapshotData),
+        .success(validResetTicketData),
+    ])
+    let model = QuotaDashboardModel(executor: executor)
+    await model.loadCached()
+    let account = try #require(model.accounts.first)
+
+    await model.setPinned(true, for: account)
+
+    #expect(await executor.commands == [
+        ["limits", "--json"],
+        ["switch", "1"],
+        ["limits", "--json", "--refresh"],
+        ["reset", "account=1", "format=json"],
+    ])
+}
+
+@MainActor
+@Test("unchecking a pinned account calls unpin then refreshes the dashboard")
+func unpinningAccountUsesUnpinThenRefreshes() async throws {
+    let executor = RecordingExecutor(results: [
+        .success(validSnapshotData),
+        .success(Data()),
+        .success(validSnapshotData),
+        .success(validResetTicketData),
+    ])
+    let model = QuotaDashboardModel(executor: executor)
+    await model.loadCached()
+    let account = try #require(model.accounts.first)
+
+    await model.setPinned(false, for: account)
+
+    #expect(await executor.commands == [
+        ["limits", "--json"],
+        ["unpin"],
+        ["limits", "--json", "--refresh"],
+        ["reset", "account=1", "format=json"],
+    ])
+}
+
+@MainActor
 @Test("opening the dashboard refreshes quota without starting a polling loop")
 func openingDashboardUsesTheManualRefreshCommand() async {
     let executor = RecordingExecutor(results: [

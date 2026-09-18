@@ -187,7 +187,12 @@ final class QuotaDashboardModel: ObservableObject {
     @Published private(set) var isRefreshing = false
     @Published private(set) var isLoadingResetTickets = false
     @Published private(set) var isRedeemingResetTicket = false
+    @Published private(set) var isUpdatingPin = false
     @Published private(set) var resetTicketConfirmationAccount: QuotaDisplayAccount?
+
+    var isPinToggleDisabled: Bool {
+        isRefreshing || isUpdatingPin
+    }
 
     private let executor: any QuotaCommandExecuting
     private let now: @Sendable () -> Date
@@ -218,6 +223,22 @@ final class QuotaDashboardModel: ObservableObject {
 
     func refreshWhenOpened() async {
         await refresh()
+    }
+
+    func setPinned(_ isPinned: Bool, for account: QuotaDisplayAccount) async {
+        guard !isUpdatingPin, !isRefreshing else { return }
+        isUpdatingPin = true
+        defer { isUpdatingPin = false }
+
+        do {
+            let arguments = isPinned ? ["switch", String(account.index + 1)] : ["unpin"]
+            _ = try await executor.run(arguments: arguments, timeout: .seconds(10))
+            await refresh()
+        } catch is CancellationError {
+            return
+        } catch {
+            errorMessage = "계정 고정 상태를 변경하지 못했습니다. 다시 시도해 주세요."
+        }
     }
 
     func loadResetTickets() async {

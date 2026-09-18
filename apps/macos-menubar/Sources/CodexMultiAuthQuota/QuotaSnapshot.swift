@@ -6,6 +6,7 @@ public enum QuotaSnapshotError: Error, Equatable {
 
 public struct QuotaSnapshot: Decodable, Equatable {
     public let schemaVersion: Int
+    public let selection: QuotaSelection?
     public let accounts: [QuotaAccount]
 
     public static func decode(data: Data) throws -> QuotaSnapshot {
@@ -25,10 +26,15 @@ public struct QuotaSnapshot: Decodable, Equatable {
                 QuotaDisplayAccount(
                     account: $0,
                     now: now,
-                    resetTickets: resetTicketsByIndex[$0.index]
+                    resetTickets: resetTicketsByIndex[$0.index],
+                    pinnedIndex: selection?.pinnedIndex
                 )
             }
     }
+}
+
+public struct QuotaSelection: Decodable, Equatable {
+    public let pinnedIndex: Int?
 }
 
 public struct QuotaAccount: Decodable, Equatable {
@@ -106,14 +112,21 @@ public struct QuotaDisplayAccount: Equatable {
     public let label: String
     public let enabled: Bool
     public let current: Bool
+    public let isPinned: Bool
     public let quota: QuotaDisplay?
     public let resetTickets: ResetTicketDisplay?
 
-    init(account: QuotaAccount, now: Date, resetTickets: ResetTicketDisplay?) {
+    init(
+        account: QuotaAccount,
+        now: Date,
+        resetTickets: ResetTicketDisplay?,
+        pinnedIndex: Int?
+    ) {
         index = account.index
         label = Self.emailLabel(from: account.label)
         enabled = account.enabled
         current = account.current
+        isPinned = account.index == pinnedIndex
         quota = account.quota.map { QuotaDisplay(quota: $0, now: now) }
         self.resetTickets = resetTickets
     }
@@ -123,7 +136,9 @@ public struct QuotaDisplayAccount: Equatable {
         guard let range = label.range(of: pattern, options: .regularExpression) else {
             return "이메일 정보 없음"
         }
-        return String(label[range])
+        let email = label[range]
+        guard let atIndex = email.firstIndex(of: "@") else { return String(email) }
+        return String(email[..<atIndex])
     }
 }
 
