@@ -183,6 +183,7 @@ final class QuotaDashboardModel: ObservableObject {
     @Published private(set) var isRefreshing = false
     @Published private(set) var isLoadingResetTickets = false
     @Published private(set) var isRedeemingResetTicket = false
+    @Published private(set) var resetTicketConfirmationAccount: QuotaDisplayAccount?
 
     private let executor: any QuotaCommandExecuting
     private let now: @Sendable () -> Date
@@ -274,6 +275,23 @@ final class QuotaDashboardModel: ObservableObject {
         } catch {
             resetTicketsErrorMessage = "초기화권을 사용하지 못했습니다. 다시 시도해 주세요."
         }
+    }
+
+    func requestResetTicketRedemption(for account: QuotaDisplayAccount) {
+        guard !isRedeemingResetTicket, account.enabled, account.resetTickets?.availableCount ?? 0 > 0 else {
+            return
+        }
+        resetTicketConfirmationAccount = account
+    }
+
+    func dismissResetTicketConfirmation() {
+        resetTicketConfirmationAccount = nil
+    }
+
+    func confirmResetTicketRedemption() async {
+        guard let account = resetTicketConfirmationAccount else { return }
+        resetTicketConfirmationAccount = nil
+        await redeemResetTicket(for: account)
     }
 
     func openCodexMultiAuth(execute: @MainActor () throws -> Void = {

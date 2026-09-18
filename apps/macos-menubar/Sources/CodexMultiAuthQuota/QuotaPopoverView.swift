@@ -8,13 +8,23 @@ enum QuotaPopoverLayout {
 
 struct QuotaPopoverView: View {
     @ObservedObject var model: QuotaDashboardModel
-    @State private var resetCandidate: QuotaDisplayAccount?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             currentAccountSection
             Divider()
             accountList
+
+            if let account = model.resetTicketConfirmationAccount {
+                ResetTicketConfirmationCard(
+                    account: account,
+                    isRedeeming: model.isRedeemingResetTicket,
+                    confirm: {
+                        Task { await model.confirmResetTicketRedemption() }
+                    },
+                    cancel: model.dismissResetTicketConfirmation
+                )
+            }
 
             if let errorMessage = model.errorMessage {
                 Label(errorMessage, systemImage: "exclamationmark.triangle")
@@ -42,27 +52,6 @@ struct QuotaPopoverView: View {
         }
         .padding(16)
         .frame(width: 360)
-        .confirmationDialog(
-            "초기화권을 사용하시겠습니까?",
-            isPresented: Binding(
-                get: { resetCandidate != nil },
-                set: { if !$0 { resetCandidate = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("초기화권 사용", role: .destructive) {
-                guard let account = resetCandidate else { return }
-                resetCandidate = nil
-                Task { await model.redeemResetTicket(for: account) }
-            }
-            Button("취소", role: .cancel) {
-                resetCandidate = nil
-            }
-        } message: {
-            if let account = resetCandidate {
-                Text(resetConfirmationMessage(for: account))
-            }
-        }
     }
 
     private var currentAccountSection: some View {
@@ -100,7 +89,7 @@ struct QuotaPopoverView: View {
                     LazyVStack(spacing: 4) {
                         ForEach(Array(model.accounts.enumerated()), id: \.offset) { _, account in
                             AccountQuotaRow(account: account) {
-                                resetCandidate = account
+                                model.requestResetTicketRedemption(for: account)
                             }
                         }
                     }
@@ -144,6 +133,34 @@ private func resetConfirmationMessage(for account: QuotaDisplayAccount) -> Strin
         return "\(account.label) 계정의 초기화권 1개를 사용합니다."
     }
     return "\(account.label) 계정의 초기화권 1개를 사용합니다. 만료일: \(expiry.formatted(date: .abbreviated, time: .omitted))"
+}
+
+private struct ResetTicketConfirmationCard: View {
+    let account: QuotaDisplayAccount
+    let isRedeeming: Bool
+    let confirm: () -> Void
+    let cancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("초기화권을 사용하시겠습니까?")
+                .font(.headline)
+            Text(resetConfirmationMessage(for: account))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                Button("취소", action: cancel)
+                    .disabled(isRedeeming)
+                Button(isRedeeming ? "사용 중…" : "초기화권 사용", role: .destructive, action: confirm)
+                    .disabled(isRedeeming)
+            }
+            .controlSize(.small)
+        }
+        .padding(10)
+        .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+    }
 }
 
 private struct AccountQuotaRow: View {

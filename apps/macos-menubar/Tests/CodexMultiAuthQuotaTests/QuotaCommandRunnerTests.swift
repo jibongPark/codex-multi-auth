@@ -52,6 +52,25 @@ private let validTwoAccountSnapshotData = Data(#"""
 }
 """#.utf8)
 
+private let belowLimitSnapshotData = Data(#"""
+{
+  "schemaVersion": 1,
+  "accounts": [{
+    "index": 0,
+    "label": "Personal (a***@example.com)",
+    "enabled": true,
+    "current": true,
+    "quota": {
+      "updatedAt": 1735689600000,
+      "status": 200,
+      "planType": "plus",
+      "primary": { "usedPercent": 47, "windowMinutes": 300, "resetAtMs": null },
+      "secondary": { "usedPercent": 72, "windowMinutes": 10080, "resetAtMs": null }
+    }
+  }]
+}
+"""#.utf8)
+
 private enum TestCommandError: Error {
     case timedOut
 }
@@ -350,6 +369,23 @@ func redeemResetTicketUsesSelectedAccount() async throws {
         ["limits", "--json", "--refresh"],
         ["reset", "account=1", "format=json"],
     ])
+}
+
+@MainActor
+@Test("a reset ticket can be confirmed before an account reaches its quota limit")
+func resetTicketConfirmationAllowsBelowLimitAccount() async throws {
+    let executor = RecordingExecutor(results: [
+        .success(belowLimitSnapshotData),
+        .success(validResetTicketData),
+    ])
+    let model = QuotaDashboardModel(executor: executor)
+    await model.loadCached()
+    await model.loadResetTickets()
+    let account = try #require(model.accounts.first)
+
+    model.requestResetTicketRedemption(for: account)
+
+    #expect(model.resetTicketConfirmationAccount?.index == account.index)
 }
 
 @MainActor
