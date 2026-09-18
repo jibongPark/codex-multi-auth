@@ -1611,10 +1611,26 @@ export async function restartCodexAppRuntimeRotation(
 		let startedRouter = false;
 		try {
 			if (platform === "darwin") {
+				// launchd owns the normal router, but older releases also spawned a
+				// detached copy. Unload the job first, then reclaim any still-live
+				// router whose status proves it belongs to this bind generation.
+				await stopMacLaunchAgent(state.launchAgentPath, options);
+				const router = await readRouterStatus(state.statusPath);
+				await stopRouter(router, platform, state.routerScriptPath, {
+					log: options.log,
+					identityToken: state.identityToken,
+					verifyProcessIdentity: options.verifyProcessIdentity,
+				}).catch(() => undefined);
+				if (router?.pid && isProcessAlive(router.pid)) {
+					throw new Error("Codex app runtime router did not stop before restart.");
+				}
 				await atomicWriteFile(paths.statePath, `${JSON.stringify(nextState, null, 2)}\n`);
 				stateWasReplaced = true;
 				await writeAppBindStartup(nextState);
-				await startMacLaunchAgent(nextState, options);
+				await runMacLaunchctl(
+					["bootstrap", macLaunchctlDomain(), nextState.launchAgentPath ?? ""],
+					options,
+				);
 				startedRouter = true;
 			} else {
 				const router = await readRouterStatus(state.statusPath);

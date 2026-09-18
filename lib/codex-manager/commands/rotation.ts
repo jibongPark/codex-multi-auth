@@ -192,8 +192,16 @@ async function runResetRuntime(
 		command: "rotation reset-runtime",
 		resetVolatileRuntimeState: true,
 		appBindRestarted,
-		unbindStatus: unbind?.status.state ?? null,
-		bindStatus: bind?.status.state ?? null,
+		unbindStatus: unbind
+			? { bound: unbind.status.bound, running: unbind.status.running }
+			: null,
+		bindStatus: bind
+			? {
+				bound: bind.status.bound,
+				running: bind.status.running,
+				baseUrl: bind.status.state?.baseUrl ?? null,
+			}
+			: null,
 	};
 	if (json) {
 		logInfo(JSON.stringify(payload));
