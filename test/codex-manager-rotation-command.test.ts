@@ -231,6 +231,7 @@ describe("rotation reset-runtime", () => {
 				resetVolatileRuntimeState: true,
 				appBindRestarted: true,
 			});
+			expect(infos.at(-1)).not.toContain("app-secret");
 		} finally {
 			resetSpy.mockRestore();
 		}

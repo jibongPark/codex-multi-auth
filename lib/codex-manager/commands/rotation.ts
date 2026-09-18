@@ -87,6 +87,7 @@ export interface RotationCommandDeps {
 	setStoragePath: (path: string | null) => void;
 	bindCodexApp?: () => Promise<AppBindResult>;
 	unbindCodexApp?: () => Promise<AppBindResult>;
+	restartCodexApp?: () => Promise<AppBindResult | null>;
 	getCodexAppBindStatus?: () => Promise<AppBindStatus>;
 	loadRuntimeObservabilitySnapshot?: () => Promise<RuntimeObservabilitySnapshot | null>;
 	loadQuotaCache?: () => Promise<QuotaCacheData | null>;
@@ -140,7 +141,28 @@ async function runResetRuntime(
 	let unbind: AppBindResult | null = null;
 	let bind: AppBindResult | null = null;
 	let appBindRestarted = false;
-	if (deps.unbindCodexApp && deps.bindCodexApp) {
+	if (deps.restartCodexApp) {
+		try {
+			bind = await deps.restartCodexApp();
+			appBindRestarted = bind !== null;
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			if (json) {
+				logInfo(
+					JSON.stringify({
+						ok: false,
+						command: "rotation reset-runtime",
+						resetVolatileRuntimeState: false,
+						appBindRestarted,
+						error: message,
+					}),
+				);
+			} else {
+				logError(`Runtime reset completed, but app bind restart failed: ${message}`);
+			}
+			return 1;
+		}
+	} else if (deps.unbindCodexApp && deps.bindCodexApp) {
 		try {
 			unbind = await deps.unbindCodexApp();
 			bind = await deps.bindCodexApp();
@@ -170,8 +192,16 @@ async function runResetRuntime(
 		command: "rotation reset-runtime",
 		resetVolatileRuntimeState: true,
 		appBindRestarted,
-		unbindStatus: unbind?.status.state ?? null,
-		bindStatus: bind?.status.state ?? null,
+		unbindStatus: unbind
+			? { bound: unbind.status.bound, running: unbind.status.running }
+			: null,
+		bindStatus: bind
+			? {
+				bound: bind.status.bound,
+				running: bind.status.running,
+				baseUrl: bind.status.state?.baseUrl ?? null,
+			}
+			: null,
 	};
 	if (json) {
 		logInfo(JSON.stringify(payload));

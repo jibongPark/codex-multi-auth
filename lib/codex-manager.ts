@@ -116,6 +116,7 @@ import {
 import {
 	bindCodexAppRuntimeRotation,
 	getAppBindStatus,
+	restartCodexAppRuntimeRotation,
 	unbindCodexAppRuntimeRotation,
 } from "./runtime/app-bind.js";
 import {
@@ -621,7 +622,17 @@ const CLI_COMMAND_HANDLERS: ReadonlyMap<string, CliCommandHandler> = new Map<
 			}),
 	],
 	["usage", (rest) => runUsageCommand(rest)],
-	["reset", (rest) => runResetCommand(rest)],
+	[
+		"reset",
+		(rest) =>
+			runResetCommand(rest, {
+				restartRuntime: async () => {
+					AccountManager.resetVolatileRuntimeState();
+					const result = await restartCodexAppRuntimeRotation();
+					return result ? "restarted" : "unavailable";
+				},
+			}),
+	],
 	[
 		"rotation",
 		(rest) =>
@@ -636,6 +647,7 @@ const CLI_COMMAND_HANDLERS: ReadonlyMap<string, CliCommandHandler> = new Map<
 				resolveActiveIndex,
 				bindCodexApp: bindCodexAppRuntimeRotation,
 				unbindCodexApp: unbindCodexAppRuntimeRotation,
+				restartCodexApp: restartCodexAppRuntimeRotation,
 				getCodexAppBindStatus: getAppBindStatus,
 				loadRuntimeObservabilitySnapshot:
 					loadPersistedRuntimeObservabilitySnapshot,

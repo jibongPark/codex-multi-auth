@@ -12,6 +12,10 @@ enum QuotaCommandError: Error {
     case timedOut
 }
 
+private struct ResetTicketRedemption: Decodable {
+    let runtimeReset: String?
+}
+
 private let maximumOutputBytesPerDrain = 64 * 1_024
 private let maximumFinalDrainPasses = 16
 
@@ -183,6 +187,7 @@ final class QuotaDashboardModel: ObservableObject {
     @Published private(set) var isRefreshing = false
     @Published private(set) var isLoadingResetTickets = false
     @Published private(set) var isRedeemingResetTicket = false
+    @Published private(set) var resetTicketConfirmationAccount: QuotaDisplayAccount?
 
     private let executor: any QuotaCommandExecuting
     private let now: @Sendable () -> Date
@@ -259,7 +264,7 @@ final class QuotaDashboardModel: ObservableObject {
         defer { isRedeemingResetTicket = false }
 
         do {
-            _ = try await executor.run(
+            let data = try await executor.run(
                 arguments: [
                     "reset",
                     "action=consume",
@@ -269,11 +274,31 @@ final class QuotaDashboardModel: ObservableObject {
                 ],
                 timeout: .seconds(30)
             )
-            resetTicketsErrorMessage = nil
             await refresh()
+            let redemption = try JSONDecoder().decode(ResetTicketRedemption.self, from: data)
+            resetTicketsErrorMessage = redemption.runtimeReset == "failed" || redemption.runtimeReset == "unavailable"
+                ? "초기화권은 사용됐지만 런타임을 재시작하지 못했습니다. Codex를 다시 열어 주세요."
+                : nil
         } catch {
             resetTicketsErrorMessage = "초기화권을 사용하지 못했습니다. 다시 시도해 주세요."
         }
+    }
+
+    func requestResetTicketRedemption(for account: QuotaDisplayAccount) {
+        guard !isRedeemingResetTicket, account.enabled, account.resetTickets?.availableCount ?? 0 > 0 else {
+            return
+        }
+        resetTicketConfirmationAccount = account
+    }
+
+    func dismissResetTicketConfirmation() {
+        resetTicketConfirmationAccount = nil
+    }
+
+    func confirmResetTicketRedemption() async {
+        guard let account = resetTicketConfirmationAccount else { return }
+        resetTicketConfirmationAccount = nil
+        await redeemResetTicket(for: account)
     }
 
     func openCodexMultiAuth(execute: @MainActor () throws -> Void = {
