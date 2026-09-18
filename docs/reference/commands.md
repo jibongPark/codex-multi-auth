@@ -171,9 +171,11 @@ and expiry; confirmation redeems one ticket only for that row and then refreshes
 
 The companion receives only the quota JSON contract, including already-masked
 labels; it does not open credential files, receive OAuth tokens, or display raw
-account emails. Its current-account indicator follows `selection.routedIndex`,
-not the live runtime selection described by `why-selected`. Account management
-remains in the CLI, available through **Codex Multi Auth 열기** in the popover.
+account emails. Account cards show only the masked part before `@`. Their checkbox
+uses `switch <n>` to pin an account for runtime routing and `unpin` to resume
+hybrid rotation. Its current-account indicator follows `selection.routedIndex`,
+not the live runtime selection described by `why-selected`. Login remains
+available through **Codex Multi Auth 열기** in the popover.
 
 The login agent records `PATH`, not arbitrary shell environment overrides such
 as `CODEX_MULTI_AUTH_DIR`; a custom account root needs an explicitly configured

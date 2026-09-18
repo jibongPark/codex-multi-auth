@@ -266,9 +266,11 @@ a native confirmation with the masked account and expiry, then redeems one ticke
 for that account and refreshes its display.
 
 The companion consumes only masked CLI JSON contracts. It does not read account
-credential files, receive tokens, or display unmasked emails.
+credential files, receive tokens, or display unmasked emails. Each account card
+shows the masked part before `@` and has a checkbox: checking it pins that account
+for runtime routing, while clearing the checked box resumes hybrid rotation.
 The current marker reflects configured routing, which can differ from the account
-selected for a live request. Account switching and login remain in the CLI.
+selected for a live request. Login remains in the CLI.
 Uninstall stops the companion and removes only its app bundle and LaunchAgent;
 saved accounts, quota cache, and the official Codex app remain intact.
 See [menu bar commands](docs/reference/commands.md#codex-multi-auth-menubar) for details.

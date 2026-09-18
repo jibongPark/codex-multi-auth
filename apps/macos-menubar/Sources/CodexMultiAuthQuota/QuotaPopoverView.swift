@@ -88,9 +88,16 @@ struct QuotaPopoverView: View {
                 ScrollView {
                     LazyVStack(spacing: 4) {
                         ForEach(Array(model.accounts.enumerated()), id: \.offset) { _, account in
-                            AccountQuotaRow(account: account) {
-                                model.requestResetTicketRedemption(for: account)
-                            }
+                            AccountQuotaRow(
+                                account: account,
+                                isPinToggleDisabled: model.isPinToggleDisabled,
+                                setPinned: { isPinned in
+                                    Task { await model.setPinned(isPinned, for: account) }
+                                },
+                                redeemResetTicket: {
+                                    model.requestResetTicketRedemption(for: account)
+                                }
+                            )
                         }
                     }
                 }
@@ -165,11 +172,24 @@ private struct ResetTicketConfirmationCard: View {
 
 private struct AccountQuotaRow: View {
     let account: QuotaDisplayAccount
+    let isPinToggleDisabled: Bool
+    let setPinned: (Bool) -> Void
     let redeemResetTicket: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline) {
+                Toggle(
+                    "",
+                    isOn: Binding(
+                        get: { account.isPinned },
+                        set: setPinned
+                    )
+                )
+                .labelsHidden()
+                .toggleStyle(.checkbox)
+                .disabled(isPinToggleDisabled)
+                .accessibilityLabel("\(account.label) 계정 고정")
                 Text(account.label)
                     .fontWeight(account.current ? .semibold : .regular)
                     .lineLimit(1)
