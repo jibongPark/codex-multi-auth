@@ -62,6 +62,8 @@ export interface ResetCommandDeps {
 	}) => Promise<CodexResetConsumePayload>;
 	loadQuotaCache?: () => Promise<QuotaCacheData>;
 	saveQuotaCache?: (cache: QuotaCacheData) => Promise<void>;
+	/** Restarts an already-bound runtime router after the durable limit state changes. */
+	restartRuntime?: () => Promise<"restarted" | "unavailable">;
 	getNow?: () => number;
 	logInfo?: (message: string) => void;
 	logError?: (message: string) => void;
@@ -329,6 +331,8 @@ export async function runResetCommand(
 		await (deps.saveAccounts ?? saveAccounts)(nextStorage);
 		let quotaCacheInvalidated = false;
 		let quotaCacheError: string | null = null;
+		let runtimeReset: "restarted" | "failed" | "unavailable" = "unavailable";
+		let runtimeResetError: string | null = null;
 		try {
 			const quotaCache = await (deps.loadQuotaCache ?? loadQuotaCache)();
 			const nextQuotaCache = invalidateQuotaCacheForAccount(
@@ -343,6 +347,14 @@ export async function runResetCommand(
 		} catch (error) {
 			quotaCacheError = error instanceof Error ? error.message : String(error);
 		}
+		if (deps.restartRuntime) {
+			try {
+				runtimeReset = await deps.restartRuntime();
+			} catch (error) {
+				runtimeReset = "failed";
+				runtimeResetError = error instanceof Error ? error.message : String(error);
+			}
+		}
 		printResult(options, logInfo, {
 			command: "reset",
 			action: "consume",
@@ -351,6 +363,8 @@ export async function runResetCommand(
 			redeemed: true,
 			quotaCacheInvalidated,
 			quotaCacheError,
+			runtimeReset,
+			runtimeResetError,
 		});
 		return 0;
 	} catch (error) {

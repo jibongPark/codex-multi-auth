@@ -372,6 +372,26 @@ func redeemResetTicketUsesSelectedAccount() async throws {
 }
 
 @MainActor
+@Test("a redeemed ticket keeps a runtime restart warning visible")
+func redeemResetTicketShowsRuntimeRestartFailure() async throws {
+    let executor = RecordingExecutor(results: [
+        .success(validSnapshotData),
+        .success(validResetTicketData),
+        .success(Data(#"{"redeemed":true,"runtimeReset":"failed"}"#.utf8)),
+        .success(validSnapshotData),
+        .success(validResetTicketData),
+    ])
+    let model = QuotaDashboardModel(executor: executor)
+    await model.loadCached()
+    await model.loadResetTickets()
+    let account = try #require(model.accounts.first)
+
+    await model.redeemResetTicket(for: account)
+
+    #expect(model.resetTicketsErrorMessage == "초기화권은 사용됐지만 런타임을 재시작하지 못했습니다. Codex를 다시 열어 주세요.")
+}
+
+@MainActor
 @Test("a reset ticket can be confirmed before an account reaches its quota limit")
 func resetTicketConfirmationAllowsBelowLimitAccount() async throws {
     let executor = RecordingExecutor(results: [

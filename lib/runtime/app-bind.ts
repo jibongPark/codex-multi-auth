@@ -1,10 +1,11 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync } from "node:fs";
 import { mkdir, open, readFile, readdir, rename, rm, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import process from "node:process";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { withFileOperationRetry } from "../fs-retry.js";
 import { getCodexMultiAuthDir } from "../runtime-paths.js";
@@ -36,6 +37,9 @@ const DEFAULT_ROUTER_READY_TIMEOUT_MS = 15_000;
 const ROUTER_STATUS_POLL_INTERVAL_MS = 100;
 const APP_ROUTER_MAX_LOG_BYTES = 1024 * 1024;
 const appBindLocks = new Map<string, Promise<void>>();
+const execFileAsync = promisify(execFile);
+
+export type LaunchctlRunner = (args: string[]) => Promise<void>;
 
 export interface AppBindPaths {
 	codexHome: string;
@@ -140,6 +144,8 @@ export interface AppBindOptions {
 	log?: (message: string) => void;
 	/** Test/integration seam for deterministic ownership verification. */
 	verifyProcessIdentity?: ProcessIdentityVerifier;
+	/** Test/integration seam for macOS LaunchAgent lifecycle management. */
+	runLaunchctl?: LaunchctlRunner;
 }
 
 export interface DetachedProcessStopOptions {
@@ -582,6 +588,51 @@ async function writeAppBindStartup(state: AppBindState): Promise<void> {
 	}
 }
 
+function macLaunchctlDomain(): string {
+	const uid = process.getuid?.();
+	if (!Number.isInteger(uid) || (uid ?? -1) < 0) {
+		throw new Error("Could not resolve the current macOS GUI user for launchctl.");
+	}
+	return `gui/${uid}`;
+}
+
+async function runMacLaunchctl(args: string[], options: AppBindOptions): Promise<void> {
+	if (options.runLaunchctl) {
+		await options.runLaunchctl(args);
+		return;
+	}
+	await execFileAsync("launchctl", args, { timeout: 10_000, windowsHide: true });
+}
+
+async function stopMacLaunchAgent(
+	launchAgentPath: string | null,
+	options: AppBindOptions,
+): Promise<void> {
+	if (!launchAgentPath) return;
+	try {
+		await runMacLaunchctl(
+			["bootout", macLaunchctlDomain(), launchAgentPath],
+			options,
+		);
+	} catch (error) {
+		// A first bind has no loaded job yet. Any bootstrap failure below remains fatal.
+		options.log?.(
+			`Codex app runtime LaunchAgent was not loaded before restart: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+}
+
+async function startMacLaunchAgent(state: AppBindState, options: AppBindOptions): Promise<void> {
+	if (!state.launchAgentPath) {
+		throw new Error("macOS runtime router has no LaunchAgent path.");
+	}
+	await stopMacLaunchAgent(state.launchAgentPath, options);
+	await runMacLaunchctl(
+		["bootstrap", macLaunchctlDomain(), state.launchAgentPath],
+		options,
+	);
+}
+
 async function removeAppBindStartup(
 	state: Pick<AppBindState, "startupPath" | "launchAgentPath">,
 ): Promise<void> {
@@ -631,6 +682,11 @@ function spawnRouter(state: AppBindState): void {
 }
 
 async function maybeStartRouter(state: AppBindState, options: AppBindOptions): Promise<boolean> {
+	if (state.platform === "darwin") {
+		if (options.spawnDetached === false) return false;
+		await startMacLaunchAgent(state, options);
+		return true;
+	}
 	if (options.spawnDetached === false) return false;
 	const router = await readRouterStatus(state.statusPath);
 	if (router && isProcessAlive(router.pid) && router.state === "running") return false;
@@ -648,6 +704,7 @@ function resolveRouterReadyTimeoutMs(options: AppBindOptions): number {
 async function waitForRouterStatus(
 	statusPath: string,
 	timeoutMs: number,
+	expectedIdentityToken?: string,
 ): Promise<AppBindRouterStatus | null> {
 	let latest: AppBindRouterStatus | null = null;
 	const deadline = Date.now() + timeoutMs;
@@ -658,7 +715,13 @@ async function waitForRouterStatus(
 			const suffix = router.lastError ? `: ${router.lastError}` : "";
 			throw new Error(`Codex app runtime router failed to start${suffix}`);
 		}
-		if (router?.state === "running" && isProcessAlive(router.pid)) return router;
+		if (
+			router?.state === "running" &&
+			isProcessAlive(router.pid) &&
+			(!expectedIdentityToken || router.identityToken === expectedIdentityToken)
+		) {
+			return router;
+		}
 		await new Promise((resolve) => setTimeout(resolve, ROUTER_STATUS_POLL_INTERVAL_MS));
 	}
 	const suffix = latest?.lastError ? `: ${latest.lastError}` : "";
@@ -1441,7 +1504,9 @@ async function bindCodexAppRuntimeRotationLocked(
 		nodePath: options.nodePath ?? process.execPath,
 		routerScriptPath: paths.routerScriptPath,
 		clientApiKey,
-		identityToken: existingState?.identityToken ?? randomBytes(24).toString("hex"),
+		// Every bind replaces the router generation. A fresh nonce prevents a stale
+		// process from satisfying readiness with an older status record.
+		identityToken: randomBytes(24).toString("hex"),
 		startupPath: paths.startupPath,
 		launchAgentPath: paths.launchAgentPath,
 		boundConfigHash: sha256(boundConfig),
@@ -1453,11 +1518,15 @@ async function bindCodexAppRuntimeRotationLocked(
 	await atomicWriteFile(paths.backupPath, `${JSON.stringify(backup, null, 2)}\n`);
 	// Write bootstrap state before spawning so router can read --state on startup
 	await atomicWriteFile(paths.statePath, `${JSON.stringify(state, null, 2)}\n`);
+	// On macOS launchd is the sole router owner. Write its job before bootstrapping
+	// it so a rebind replaces any loaded job instead of creating a detached twin.
+	if (platform === "darwin") await writeAppBindStartup(state);
 	const startedRouter = await maybeStartRouter(state, options);
 	const router = startedRouter
 		? await waitForRouterStatus(
 				state.statusPath,
 				resolveRouterReadyTimeoutMs(options),
+				state.identityToken,
 			)
 		: await readRouterStatus(state.statusPath);
 	const routerBaseUrl = router?.baseUrl ?? null;
@@ -1512,12 +1581,93 @@ async function bindCodexAppRuntimeRotationLocked(
 	}
 	await atomicWriteFile(paths.configPath, boundConfig);
 	await atomicWriteFile(paths.statePath, `${JSON.stringify(state, null, 2)}\n`);
-	await writeAppBindStartup(state);
+	if (platform !== "darwin") await writeAppBindStartup(state);
 	const status = await getAppBindStatus(options);
 	return {
 		status,
 		message: `Bound Codex app config ${paths.configPath} to ${baseUrl}`,
 	};
+}
+
+/**
+ * Restarts a bound router without changing the app's configured bearer token.
+ * Keeping the existing bind state avoids forcing a desktop-app restart solely
+ * because the router must reload account and rate-limit state from disk.
+ */
+export async function restartCodexAppRuntimeRotation(
+	options: AppBindOptions = {},
+): Promise<AppBindResult | null> {
+	const paths = resolveAppBindPaths(options);
+	return withAppBindLock(paths.bindDir, async () => {
+		const state = await readAppBindState(paths.statePath);
+		if (!state) return null;
+		const platform = options.platform ?? process.platform;
+		const nextState: AppBindState = {
+			...state,
+			identityToken: randomBytes(24).toString("hex"),
+			updatedAt: options.now?.() ?? Date.now(),
+		};
+		let stateWasReplaced = false;
+		let startedRouter = false;
+		try {
+			if (platform === "darwin") {
+				await atomicWriteFile(paths.statePath, `${JSON.stringify(nextState, null, 2)}\n`);
+				stateWasReplaced = true;
+				await writeAppBindStartup(nextState);
+				await startMacLaunchAgent(nextState, options);
+				startedRouter = true;
+			} else {
+				const router = await readRouterStatus(state.statusPath);
+				await stopRouter(router, platform, state.routerScriptPath, {
+					log: options.log,
+					identityToken: state.identityToken,
+					verifyProcessIdentity: options.verifyProcessIdentity,
+				}).catch(() => undefined);
+				if (router?.pid && isProcessAlive(router.pid)) {
+					throw new Error("Codex app runtime router did not stop before restart.");
+				}
+				await atomicWriteFile(paths.statePath, `${JSON.stringify(nextState, null, 2)}\n`);
+				stateWasReplaced = true;
+				startedRouter = await maybeStartRouter(nextState, options);
+			}
+			if (startedRouter) {
+				const router = await waitForRouterStatus(
+					state.statusPath,
+					resolveRouterReadyTimeoutMs(options),
+					nextState.identityToken,
+				);
+				if (!router || router.identityToken !== nextState.identityToken) {
+					throw new Error("Codex app runtime router reported an unexpected identity.");
+				}
+			}
+		} catch (error) {
+			if (stateWasReplaced) {
+				if (platform === "darwin") {
+					await stopMacLaunchAgent(nextState.launchAgentPath, options);
+					await atomicWriteFile(paths.statePath, `${JSON.stringify(state, null, 2)}\n`);
+					await writeAppBindStartup(state);
+					try {
+						await runMacLaunchctl(
+							["bootstrap", macLaunchctlDomain(), state.launchAgentPath ?? ""],
+							options,
+						);
+					} catch (rollbackError) {
+						options.log?.(
+							`Codex app runtime router rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+						);
+					}
+				} else {
+					await atomicWriteFile(paths.statePath, `${JSON.stringify(state, null, 2)}\n`);
+				}
+			}
+			throw error;
+		}
+		const status = await getAppBindStatus(options);
+		return {
+			status,
+			message: `Restarted Codex app runtime router for ${nextState.baseUrl}`,
+		};
+	});
 }
 
 export async function unbindCodexAppRuntimeRotation(
@@ -1534,8 +1684,11 @@ async function unbindCodexAppRuntimeRotationLocked(
 	paths: AppBindPaths,
 ): Promise<AppBindResult> {
 	const state = await readAppBindState(paths.statePath);
-	const router = await readRouterStatus(paths.statusPath);
 	const platform = options.platform ?? process.platform;
+	if (platform === "darwin") {
+		await stopMacLaunchAgent(state?.launchAgentPath ?? paths.launchAgentPath, options);
+	}
+	const router = await readRouterStatus(paths.statusPath);
 	const routerStopped = await stopRouter(
 		router,
 		platform,

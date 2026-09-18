@@ -11,6 +11,7 @@ import {
 	formatAppBindStatus,
 	getAppBindStatus,
 	parsePosixProcessStartTime,
+	restartCodexAppRuntimeRotation,
 	resolveAppBindPaths,
 	restoreConfigTomlFromAppBind,
 	rewriteConfigTomlForAppBind,
@@ -55,6 +56,7 @@ async function seedExistingAppBindState(params: {
 	baseUrl: string;
 	nodePath: string;
 	routerScriptPath: string;
+	identityToken?: string;
 }): Promise<void> {
 	const paths = resolveAppBindPaths(params);
 	await mkdir(paths.bindDir, { recursive: true });
@@ -75,6 +77,7 @@ async function seedExistingAppBindState(params: {
 				nodePath: params.nodePath,
 				routerScriptPath: params.routerScriptPath,
 				clientApiKey: "existing-secret",
+				identityToken: params.identityToken,
 				startupPath: paths.startupPath,
 				launchAgentPath: paths.launchAgentPath,
 				boundConfigHash: "existing-hash",
@@ -1634,8 +1637,9 @@ describe("Codex app runtime rotation bind", () => {
 				"import { dirname } from 'node:path';",
 				"const args = process.argv.slice(2);",
 				"const statusPath = args[args.indexOf('--status') + 1];",
+				"const identityToken = args[args.indexOf('--identity-token') + 1];",
 				"mkdirSync(dirname(statusPath), { recursive: true });",
-				"writeFileSync(statusPath, JSON.stringify({ version: 1, state: 'running', pid: process.pid, startedAt: Date.now(), baseUrl: 'http://127.0.0.1:54321', updatedAt: Date.now() }) + '\\n', 'utf8');",
+				"writeFileSync(statusPath, JSON.stringify({ version: 1, state: 'running', pid: process.pid, startedAt: Date.now(), baseUrl: 'http://127.0.0.1:54321', identityToken, updatedAt: Date.now() }) + '\\n', 'utf8');",
 				"process.on('SIGTERM', () => process.exit(0));",
 				"setInterval(() => undefined, 1000);",
 				"",
@@ -1690,9 +1694,10 @@ describe("Codex app runtime rotation bind", () => {
 				"import { dirname } from 'node:path';",
 				"const args = process.argv.slice(2);",
 				"const statusPath = args[args.indexOf('--status') + 1];",
+				"const identityToken = args[args.indexOf('--identity-token') + 1];",
 				"setTimeout(() => {",
 				"  mkdirSync(dirname(statusPath), { recursive: true });",
-				"  writeFileSync(statusPath, JSON.stringify({ version: 1, state: 'running', pid: process.pid, startedAt: Date.now(), baseUrl: 'http://127.0.0.1:54322', updatedAt: Date.now() }) + '\\n', 'utf8');",
+				"  writeFileSync(statusPath, JSON.stringify({ version: 1, state: 'running', pid: process.pid, startedAt: Date.now(), baseUrl: 'http://127.0.0.1:54322', identityToken, updatedAt: Date.now() }) + '\\n', 'utf8');",
 				"}, 2300);",
 				"process.on('SIGTERM', () => process.exit(0));",
 				"setInterval(() => undefined, 1000);",
@@ -1799,6 +1804,219 @@ describe("Codex app runtime rotation bind", () => {
 		expect(plist).toContain("1048576");
 		expect(plist).toContain("runtime-rotation-app-bind.json");
 		expect(plist).not.toContain(result.status.state?.clientApiKey ?? "");
+	});
+
+	it("replaces the loaded macOS LaunchAgent before bootstrapping its router", async () => {
+		const root = await createTempRoot("codex-app-bind-mac-replace-");
+		const multiAuthDir = join(root, "multi-auth");
+		const codexHome = join(root, ".codex");
+		const env = {
+			CODEX_MULTI_AUTH_DIR: multiAuthDir,
+			CODEX_MULTI_AUTH_APP_BIND_CODEX_HOME: codexHome,
+		};
+		const routerScriptPath = join(root, "codex-app-router.js");
+		await mkdir(codexHome, { recursive: true });
+		await writeFile(join(codexHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+		await seedExistingAppBindState({
+			platform: "darwin",
+			home: root,
+			env,
+			port: 4568,
+			baseUrl: "http://127.0.0.1:4568",
+			nodePath: process.execPath,
+			routerScriptPath,
+			identityToken: "stale-router",
+		});
+		const launchctlCalls: string[][] = [];
+
+		await bindCodexAppRuntimeRotation({
+			platform: "darwin",
+			home: root,
+			env,
+			nodePath: process.execPath,
+			routerScriptPath,
+			runLaunchctl: async (args) => {
+				launchctlCalls.push(args);
+				if (args[0] !== "bootstrap") return;
+				const paths = resolveAppBindPaths({ platform: "darwin", home: root, env });
+				const state = JSON.parse(await readFile(paths.statePath, "utf8")) as Record<string, unknown>;
+				await writeFile(
+					paths.statusPath,
+					`${JSON.stringify({
+						state: "running",
+						pid: process.pid,
+						startedAt: Date.now(),
+						baseUrl: "http://127.0.0.1:4568",
+						identityToken: state.identityToken,
+					})}\n`,
+					"utf8",
+				);
+			},
+		});
+
+		const plistPath = resolveAppBindPaths({ platform: "darwin", home: root, env }).launchAgentPath;
+		expect(launchctlCalls).toEqual([
+			["bootout", `gui/${process.getuid?.()}`, plistPath],
+			["bootstrap", `gui/${process.getuid?.()}`, plistPath],
+		]);
+	});
+
+	it("waits for the replacement macOS router identity before accepting its status", async () => {
+		const root = await createTempRoot("codex-app-bind-mac-identity-");
+		const multiAuthDir = join(root, "multi-auth");
+		const codexHome = join(root, ".codex");
+		const env = {
+			CODEX_MULTI_AUTH_DIR: multiAuthDir,
+			CODEX_MULTI_AUTH_APP_BIND_CODEX_HOME: codexHome,
+		};
+		const routerScriptPath = join(root, "codex-app-router.js");
+		await mkdir(codexHome, { recursive: true });
+		await writeFile(join(codexHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+		await seedExistingAppBindState({
+			platform: "darwin",
+			home: root,
+			env,
+			port: 4568,
+			baseUrl: "http://127.0.0.1:4568",
+			nodePath: process.execPath,
+			routerScriptPath,
+			identityToken: "stale-router",
+		});
+
+		const result = await bindCodexAppRuntimeRotation({
+			platform: "darwin",
+			home: root,
+			env,
+			nodePath: process.execPath,
+			routerScriptPath,
+			runLaunchctl: async (args) => {
+				const paths = resolveAppBindPaths({ platform: "darwin", home: root, env });
+				if (args[0] === "bootout") {
+					await writeFile(
+						paths.statusPath,
+						`${JSON.stringify({
+							state: "running",
+							pid: process.pid,
+							startedAt: Date.now(),
+							baseUrl: "http://127.0.0.1:4568",
+							identityToken: "stale-router",
+						})}\n`,
+						"utf8",
+					);
+					return;
+				}
+				const state = JSON.parse(await readFile(paths.statePath, "utf8")) as Record<string, unknown>;
+				void (async () => {
+					await new Promise((resolve) => setTimeout(resolve, 150));
+					await writeFile(
+						paths.statusPath,
+						`${JSON.stringify({
+							state: "running",
+							pid: process.pid,
+							startedAt: Date.now(),
+							baseUrl: "http://127.0.0.1:4568",
+							identityToken: state.identityToken,
+						})}\n`,
+						"utf8",
+					);
+				})().catch(() => undefined);
+			},
+		});
+
+		expect(result.status.state?.identityToken).not.toBe("stale-router");
+		expect(result.status.router?.identityToken).toBe(result.status.state?.identityToken);
+	});
+
+	it("gives every macOS runtime restart a new router identity", async () => {
+		const root = await createTempRoot("codex-app-bind-mac-restart-");
+		const multiAuthDir = join(root, "multi-auth");
+		const codexHome = join(root, ".codex");
+		const env = {
+			CODEX_MULTI_AUTH_DIR: multiAuthDir,
+			CODEX_MULTI_AUTH_APP_BIND_CODEX_HOME: codexHome,
+		};
+		const routerScriptPath = join(root, "codex-app-router.js");
+		await mkdir(codexHome, { recursive: true });
+		await seedExistingAppBindState({
+			platform: "darwin",
+			home: root,
+			env,
+			port: 4568,
+			baseUrl: "http://127.0.0.1:4568",
+			nodePath: process.execPath,
+			routerScriptPath,
+			identityToken: "old-router",
+		});
+
+		const result = await restartCodexAppRuntimeRotation({
+			platform: "darwin",
+			home: root,
+			env,
+			runLaunchctl: async (args) => {
+				if (args[0] !== "bootstrap") return;
+				const paths = resolveAppBindPaths({ platform: "darwin", home: root, env });
+				const state = JSON.parse(await readFile(paths.statePath, "utf8")) as Record<string, unknown>;
+				await writeFile(
+					paths.statusPath,
+					`${JSON.stringify({
+						state: "running",
+						pid: process.pid,
+						startedAt: Date.now(),
+						baseUrl: "http://127.0.0.1:4568",
+						identityToken: state.identityToken,
+					})}\n`,
+					"utf8",
+				);
+			},
+		});
+
+		expect(result?.status.state?.identityToken).not.toBe("old-router");
+		expect(result?.status.router?.identityToken).toBe(result?.status.state?.identityToken);
+	});
+
+	it("restores the prior macOS router identity when its replacement never becomes ready", async () => {
+		const root = await createTempRoot("codex-app-bind-mac-restart-rollback-");
+		const multiAuthDir = join(root, "multi-auth");
+		const codexHome = join(root, ".codex");
+		const env = {
+			CODEX_MULTI_AUTH_DIR: multiAuthDir,
+			CODEX_MULTI_AUTH_APP_BIND_CODEX_HOME: codexHome,
+		};
+		const routerScriptPath = join(root, "codex-app-router.js");
+		await mkdir(codexHome, { recursive: true });
+		await seedExistingAppBindState({
+			platform: "darwin",
+			home: root,
+			env,
+			port: 4568,
+			baseUrl: "http://127.0.0.1:4568",
+			nodePath: process.execPath,
+			routerScriptPath,
+			identityToken: "recoverable-router",
+		});
+
+		const launchctlCalls: string[][] = [];
+		await expect(
+			restartCodexAppRuntimeRotation({
+				platform: "darwin",
+				home: root,
+				env,
+				routerReadyTimeoutMs: 100,
+				runLaunchctl: async (args) => {
+					launchctlCalls.push(args);
+				},
+			}),
+		).rejects.toThrow("did not report ready");
+
+		const paths = resolveAppBindPaths({ platform: "darwin", home: root, env });
+		const state = JSON.parse(await readFile(paths.statePath, "utf8")) as Record<string, unknown>;
+		expect(state.identityToken).toBe("recoverable-router");
+		expect(launchctlCalls.map(([command]) => command)).toEqual([
+			"bootout",
+			"bootstrap",
+			"bootout",
+			"bootstrap",
+		]);
 	});
 
 	it("rejects non-loopback router hosts before binding", async () => {

@@ -100,6 +100,49 @@ describe("reset manager command", () => {
 		expect(savedStorage?.accounts[0]?.coolingDownUntil).toBeUndefined();
 	});
 
+	it("restarts the runtime after redeeming a ticket so the live router reloads cleared limits", async () => {
+		const { deps } = createDeps();
+		const restartRuntime = vi.fn(async () => "restarted" as const);
+		deps.restartRuntime = restartRuntime;
+
+		await expect(
+			runResetCommand(["action=consume", "account=1", "confirm=true"], deps),
+		).resolves.toBe(0);
+
+		expect(restartRuntime).toHaveBeenCalledTimes(1);
+	});
+
+	it("keeps a redeemed ticket successful when runtime restart fails", async () => {
+		const { deps, logInfo } = createDeps();
+		deps.restartRuntime = vi.fn(async () => {
+			throw new Error("router unavailable");
+		});
+
+		await expect(
+			runResetCommand(["action=consume", "account=1", "confirm=true", "format=json"], deps),
+		).resolves.toBe(0);
+
+		expect(JSON.parse(logInfo.mock.calls.at(-1)?.[0] ?? "{}")).toMatchObject({
+			redeemed: true,
+			runtimeReset: "failed",
+			runtimeResetError: "router unavailable",
+		});
+	});
+
+	it("reports an unbound runtime as unavailable instead of claiming it restarted", async () => {
+		const { deps, logInfo } = createDeps();
+		deps.restartRuntime = vi.fn(async () => "unavailable" as const);
+
+		await expect(
+			runResetCommand(["action=consume", "account=1", "confirm=true", "format=json"], deps),
+		).resolves.toBe(0);
+
+		expect(JSON.parse(logInfo.mock.calls.at(-1)?.[0] ?? "{}")).toMatchObject({
+			redeemed: true,
+			runtimeReset: "unavailable",
+		});
+	});
+
 	it("preserves a non-rate-limit cooldown after redeeming a ticket", async () => {
 		const { storage, deps } = createDeps();
 		storage.accounts[0]!.cooldownReason = "auth-failure";
