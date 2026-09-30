@@ -1,8 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { runResetCommand } from "../lib/codex-manager/commands/reset.js";
+import { createRedeemRequestId } from "../lib/codex-reset.js";
+import type { ResetCreditService } from "../lib/runtime/reset-credits.js";
 
 function createDeps() {
+	const redeemSelectedTicket: ResetCreditService["redeemSelectedTicket"] = async (_target, select, consume, validate) => {
+		const selected = await select();
+		await validate?.(selected.ticket);
+		const outcome = await consume(selected.ticket, selected.idempotencyKey);
+		return { ticket: selected.ticket, outcome };
+	};
 	const storage = {
 		version: 3 as const,
 		activeIndex: 0,
@@ -58,6 +66,7 @@ function createDeps() {
 			})),
 			fetchUsage: vi.fn(async () => ({ plan_type: "pro" })),
 			consumeCredit: vi.fn(async () => ({ code: "ok" })),
+			redeemSelectedTicket: vi.fn(redeemSelectedTicket),
 			loadQuotaCache: vi.fn(async () => structuredClone(quotaCache)),
 			saveQuotaCache: vi.fn(async () => undefined),
 			logInfo,
@@ -82,7 +91,109 @@ describe("reset manager command", () => {
 
 		await expect(runResetCommand(["action=consume"], deps)).resolves.toBe(0);
 		expect(deps.consumeCredit).not.toHaveBeenCalled();
+		expect(deps.redeemSelectedTicket).not.toHaveBeenCalled();
 		expect(logInfo).toHaveBeenCalledWith(expect.stringContaining("earlier"));
+	});
+
+	it("keeps dryRun JSON as a preview and allows explicit ticket selection", async () => {
+		const { deps, logInfo } = createDeps();
+		await expect(runResetCommand(["action=consume", "creditId=later", "confirm=true", "dryRun=true", "format=json"], deps)).resolves.toBe(0);
+		expect(deps.consumeCredit).not.toHaveBeenCalled();
+		expect(deps.redeemSelectedTicket).not.toHaveBeenCalled();
+		expect(JSON.parse(logInfo.mock.calls.at(-1)?.[0] ?? "{}")).toMatchObject({
+			preview: true,
+			redeemed: false,
+			credit: { id: "later" },
+		});
+	});
+
+	it("passes an explicit ticket through the coordinated consume path", async () => {
+		const { deps } = createDeps();
+		await expect(runResetCommand(["action=consume", "creditId=later", "confirm=true"], deps)).resolves.toBe(0);
+		expect(deps.consumeCredit).toHaveBeenCalledWith(expect.objectContaining({
+			creditId: "later",
+			redeemRequestId: createRedeemRequestId("later"),
+		}));
+	});
+
+	it("retries the same pending ticket without requiring another list response", async () => {
+		const { deps } = createDeps();
+		deps.fetchCredits.mockRejectedValue(new Error("ticket list unavailable"));
+		const retry: ResetCreditService["redeemSelectedTicket"] = async (_target, select, consume, validate) => {
+			const selected = await select({ idempotencyKey: createRedeemRequestId("earlier"), ticketId: "earlier" });
+			await validate?.(selected.ticket);
+			return { ticket: selected.ticket, outcome: await consume(selected.ticket, selected.idempotencyKey) };
+		};
+		deps.redeemSelectedTicket = vi.fn(retry);
+		await expect(runResetCommand(["action=consume", "creditId=earlier", "confirm=true"], deps)).resolves.toBe(0);
+		expect(deps.fetchCredits).not.toHaveBeenCalled();
+		expect(deps.consumeCredit).toHaveBeenCalledWith(expect.objectContaining({
+			creditId: "earlier",
+			redeemRequestId: createRedeemRequestId("earlier"),
+		}));
+	});
+
+	it("recovers an auto-selected ticket after an uncertain POST when the list omits it", async () => {
+		const { deps } = createDeps();
+		deps.fetchCredits.mockResolvedValue({ credits: [
+			{ id: "later", status: "available", expires_at: "2026-12-01T00:00:00Z" },
+		] });
+		const retry: ResetCreditService["redeemSelectedTicket"] = async (_target, select, consume, validate) => {
+			const selected = await select({ idempotencyKey: createRedeemRequestId("earlier"), ticketId: "earlier" });
+			await validate?.(selected.ticket);
+			return { ticket: selected.ticket, outcome: await consume(selected.ticket, selected.idempotencyKey) };
+		};
+		deps.redeemSelectedTicket = vi.fn(retry);
+		await expect(runResetCommand(["action=consume", "confirm=true"], deps)).resolves.toBe(0);
+		expect(deps.fetchCredits).not.toHaveBeenCalled();
+		expect(deps.consumeCredit).toHaveBeenCalledWith(expect.objectContaining({
+			creditId: "earlier",
+			redeemRequestId: createRedeemRequestId("earlier"),
+		}));
+	});
+
+	it("recovers a pending ticket from a non-available list entry before selecting another", async () => {
+		const { deps } = createDeps();
+		deps.fetchCredits.mockResolvedValue({ credits: [
+			{ id: "later", status: "available", expires_at: "2026-12-01T00:00:00Z" },
+			{ id: "earlier", status: "redeemed", expires_at: "2026-10-01T00:00:00Z" },
+		] });
+		const retry: ResetCreditService["redeemSelectedTicket"] = async (_target, select, consume, validate) => {
+			const selected = await select({ idempotencyKey: createRedeemRequestId("earlier") });
+			await validate?.(selected.ticket);
+			return { ticket: selected.ticket, outcome: await consume(selected.ticket, selected.idempotencyKey) };
+		};
+		deps.redeemSelectedTicket = vi.fn(retry);
+		await expect(runResetCommand(["action=consume", "confirm=true"], deps)).resolves.toBe(0);
+		expect(deps.consumeCredit).toHaveBeenCalledWith(expect.objectContaining({ creditId: "earlier" }));
+	});
+
+	it("does not consume another ticket when the pending ticket is absent", async () => {
+		const { deps, logInfo } = createDeps();
+		deps.fetchCredits.mockResolvedValue({ credits: [
+			{ id: "later", status: "available", expires_at: "2026-12-01T00:00:00Z" },
+		] });
+		const retry: ResetCreditService["redeemSelectedTicket"] = async (_target, select, consume, validate) => {
+			const selected = await select({ idempotencyKey: createRedeemRequestId("earlier") });
+			await validate?.(selected.ticket);
+			return { ticket: selected.ticket, outcome: await consume(selected.ticket, selected.idempotencyKey) };
+		};
+		deps.redeemSelectedTicket = vi.fn(retry);
+		await expect(runResetCommand(["action=consume", "confirm=true", "format=json"], deps)).resolves.toBe(1);
+		expect(deps.consumeCredit).not.toHaveBeenCalled();
+		expect(JSON.parse(logInfo.mock.calls.at(-1)?.[0] ?? "{}")).toMatchObject({
+			redeemed: null,
+			error: expect.stringContaining("original creditId"),
+		});
+	});
+
+	it("rechecks the persisted account before posting under the shared lock", async () => {
+		const { storage, deps } = createDeps();
+		const disabled = structuredClone(storage);
+		disabled.accounts[0] = { ...disabled.accounts[0]!, enabled: false };
+		deps.loadAccounts.mockResolvedValueOnce(structuredClone(storage)).mockResolvedValueOnce(disabled);
+		await expect(runResetCommand(["action=consume", "confirm=true"], deps)).resolves.toBe(1);
+		expect(deps.consumeCredit).not.toHaveBeenCalled();
 	});
 
 	it("consumes the selected account ticket only after confirmation and clears local limits", async () => {
@@ -93,7 +204,7 @@ describe("reset manager command", () => {
 			runResetCommand(["action=consume", "account=1", "confirm=true"], deps),
 		).resolves.toBe(0);
 		expect(deps.consumeCredit).toHaveBeenCalledWith(
-			expect.objectContaining({ creditId: "earlier" }),
+			expect.objectContaining({ creditId: "earlier", redeemRequestId: createRedeemRequestId("earlier") }),
 		);
 		const savedStorage = deps.saveAccounts.mock.calls[0]?.[0];
 		expect(savedStorage?.accounts[0]?.rateLimitResetTimes).toBeUndefined();
@@ -127,6 +238,34 @@ describe("reset manager command", () => {
 			runtimeReset: "failed",
 			runtimeResetError: "router unavailable",
 		});
+	});
+
+	it("reports confirmed redemption when local account cleanup fails", async () => {
+		const { deps, logInfo } = createDeps();
+		deps.saveAccounts.mockRejectedValue(new Error("disk full"));
+		await expect(runResetCommand(["action=consume", "confirm=true", "format=json"], deps)).resolves.toBe(0);
+		expect(deps.consumeCredit).toHaveBeenCalledTimes(1);
+		expect(JSON.parse(logInfo.mock.calls.at(-1)?.[0] ?? "{}")).toMatchObject({
+			redeemed: true,
+			localCleanupError: "disk full",
+		});
+	});
+
+	it("shows local cleanup failure in text output without suggesting another redemption", async () => {
+		const { deps, logInfo } = createDeps();
+		deps.saveAccounts.mockRejectedValue(new Error("disk full"));
+		await expect(runResetCommand(["action=consume", "confirm=true"], deps)).resolves.toBe(0);
+		expect(deps.consumeCredit).toHaveBeenCalledTimes(1);
+		expect(logInfo).toHaveBeenCalledWith(expect.stringContaining("Redeemed: account 1"));
+		expect(logInfo).toHaveBeenCalledWith(expect.stringContaining("local cleanup failed: disk full"));
+	});
+
+	it("does not treat a provider error payload as confirmed consumption", async () => {
+		const { deps, logInfo } = createDeps();
+		deps.consumeCredit.mockResolvedValue({ code: "denied" });
+		await expect(runResetCommand(["action=consume", "confirm=true", "format=json"], deps)).resolves.toBe(1);
+		expect(deps.saveAccounts).not.toHaveBeenCalled();
+		expect(JSON.parse(logInfo.mock.calls.at(-1)?.[0] ?? "{}")).toMatchObject({ redeemed: null });
 	});
 
 	it("reports an unbound runtime as unavailable instead of claiming it restarted", async () => {

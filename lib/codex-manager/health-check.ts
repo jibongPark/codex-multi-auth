@@ -1,3 +1,7 @@
+import { refreshAndPrintResetCredits } from "../runtime/account-reset-credits.js";
+import { mapWithConcurrency } from "../concurrency.js";
+import { withCheckProgress } from "../ui/check-progress.js";
+import { refreshAndPrintModelInventory } from "../runtime/model-discovery-status.js";
 import {
 	AUTH_INVALIDATION_MARKER,
 	extractAccountEmail,
@@ -5,6 +9,7 @@ import {
 	formatAccountLabel,
 	sanitizeEmail,
 } from "../accounts.js";
+import { codexCliAccountIdFor } from "../auth/token-utils.js";
 import { setCodexCliActiveSelection } from "../codex-cli/writer.js";
 import {
 	type DashboardDisplaySettings,
@@ -59,7 +64,10 @@ function appendAuthInvalidationMarker(
  */
 export interface HealthCheckOptions {
 	forceRefresh?: boolean;
+	discoverModels?: boolean;
 	liveProbe?: boolean;
+	/** Explicit `check --prime` only: may start an unused subscription's quota windows. */
+	primeUnusedSubscription?: boolean;
 	model?: string;
 	display?: DashboardDisplaySettings;
 }
@@ -69,6 +77,7 @@ export async function runHealthCheck(
 ): Promise<void> {
 	const forceRefresh = options.forceRefresh === true;
 	const liveProbe = options.liveProbe === true;
+	const primeUnusedSubscription = options.primeUnusedSubscription === true;
 	const probeModel = options.model?.trim() || DEFAULT_LIVE_PROBE_MODEL;
 	const modelInspection = inspectRequestedModel(probeModel);
 	const display = options.display ?? DEFAULT_DASHBOARD_DISPLAY_SETTINGS;
@@ -79,6 +88,7 @@ export async function runHealthCheck(
 	const storage = await loadAccounts();
 	if (!storage || storage.accounts.length === 0) {
 		console.log("No accounts configured.");
+		if (options.discoverModels) await refreshAndPrintModelInventory(console.log);
 		return;
 	}
 	let quotaEmailFallbackState =
@@ -111,6 +121,27 @@ export async function runHealthCheck(
 			),
 		);
 	}
+ type ProbeOutcome = { ok: true; value: Awaited<ReturnType<typeof fetchCodexQuotaSnapshot>> } | { ok: false; error: unknown };
+ const quickProbes = new Map<number, ProbeOutcome>();
+ if (liveProbe && !forceRefresh) {
+  const candidates = storage.accounts.flatMap((account, index) => {
+   const accountId = account.accountId ?? extractAccountId(account.accessToken);
+   return hasUsableAccessToken(account, now) && account.accessToken && accountId
+    ? [{index,accountId,accessToken:account.accessToken}] : [];
+  });
+  if(candidates.length){
+   let completed = 0;
+   await withCheckProgress(() => `Checking account probes: ${completed}/${candidates.length}`, async () => {
+    await mapWithConcurrency(candidates, 3, async candidate => {
+     try {
+      const value = await fetchCodexQuotaSnapshot({primeUnusedSubscription,accountId:candidate.accountId,accessToken:candidate.accessToken,model:modelInspection.normalized});
+      quickProbes.set(candidate.index,{ok:true,value});
+     } catch(error) { quickProbes.set(candidate.index,{ok:false,error}); }
+     finally { completed++; }
+    });
+   }, console.log);
+  }
+ }
 	for (let i = 0; i < storage.accounts.length; i += 1) {
 		const account = storage.accounts[i];
 		if (!account) continue;
@@ -140,11 +171,13 @@ export async function runHealthCheck(
 						"signed in (live check skipped: missing account ID)";
 				} else {
 					try {
-						const snapshot = await fetchCodexQuotaSnapshot({
+						const priorProbe = quickProbes.get(i);
+      if(priorProbe && !priorProbe.ok) throw priorProbe.error;
+      const snapshot = priorProbe?.ok ? priorProbe.value : await withCheckProgress(`Account ${i + 1}/${storage.accounts.length}: live probe`, () => fetchCodexQuotaSnapshot({primeUnusedSubscription,
 							accountId: probeAccountId,
 							accessToken: currentAccessToken,
 							model: modelInspection.normalized,
-						});
+						}), console.log);
 						if (workingQuotaCache) {
 							quotaCacheChanged =
 								updateQuotaCacheForAccount(
@@ -156,6 +189,7 @@ export async function runHealthCheck(
 								) || quotaCacheChanged;
 						}
 						healthDetail = formatQuotaSnapshotForDashboard(snapshot, display);
+						if (snapshot.primingFailure) { healthTone = "warning"; warnings += 1; }
 						codexAvailable += 1;
 					} catch (error) {
 						warnings += 1;
@@ -187,7 +221,7 @@ export async function runHealthCheck(
 			}
 			continue;
 		}
-		const result = await queuedRefresh(account.refreshToken);
+		const result = await withCheckProgress(`Account ${i + 1}/${storage.accounts.length}: refreshing sign-in`, () => queuedRefresh(account.refreshToken), console.log);
 		if (result.type === "success") {
 			const tokenAccountId = extractAccountId(result.access);
 			const nextEmail = sanitizeEmail(
@@ -257,11 +291,11 @@ export async function runHealthCheck(
 						"signed in (live check skipped: missing account ID)";
 				} else {
 					try {
-						const snapshot = await fetchCodexQuotaSnapshot({
+						const snapshot = await withCheckProgress(`Account ${i + 1}/${storage.accounts.length}: live probe`, () => fetchCodexQuotaSnapshot({primeUnusedSubscription,
 							accountId: probeAccountId,
 							accessToken: result.access,
 							model: modelInspection.normalized,
-						});
+						}), console.log);
 						if (workingQuotaCache) {
 							quotaCacheChanged =
 								updateQuotaCacheForAccount(
@@ -273,6 +307,7 @@ export async function runHealthCheck(
 								) || quotaCacheChanged;
 						}
 						healthyMessage = formatQuotaSnapshotForDashboard(snapshot, display);
+						if (snapshot.primingFailure) { healthyTone = "warning"; warnings += 1; }
 						codexAvailable += 1;
 					} catch (error) {
 						warnings += 1;
@@ -336,7 +371,7 @@ export async function runHealthCheck(
 	}
 	if (workingQuotaCache && quotaCacheChanged) {
 		try {
-			await saveQuotaCache(workingQuotaCache);
+			await saveQuotaCache(workingQuotaCache, quotaCache ?? undefined);
 		} catch (error) {
 			// Quota cache is a derived artifact; a transient Windows EBUSY/EPERM
 			// here must not abort the health check before account fixes commit.
@@ -358,7 +393,7 @@ export async function runHealthCheck(
 		const activeAccount = storage.accounts[activeIndex];
 		if (activeAccount) {
 			await setCodexCliActiveSelection({
-				accountId: activeAccount.accountId,
+				accountId: codexCliAccountIdFor(activeAccount, activeAccount.accessToken),
 				email: activeAccount.email,
 				accessToken: activeAccount.accessToken,
 				refreshToken: activeAccount.refreshToken,
@@ -398,4 +433,10 @@ export async function runHealthCheck(
 					],
 		),
 	);
+	if (options.discoverModels) {
+  await refreshAndPrintResetCredits(console.log).catch(() => {
+   console.log("Reset-credit availability could not be refreshed; cached counts may be stale.");
+  });
+  await refreshAndPrintModelInventory(console.log);
+ }
 }

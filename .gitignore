@@ -1,9 +1,9 @@
 node_modules/
+*.tsbuildinfo
 bun.lockb
 pnpm-lock.yaml
 dist/
 .DS_Store
-.worktrees/
 .history/
 opencode.json
 .opencode/
@@ -36,3 +36,6 @@ test-results.md
 
 # OMC session scratch (never publish)
 .omc/
+
+# worktrees (git worktree add .worktrees/...)
+.worktrees/

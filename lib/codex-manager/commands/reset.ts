@@ -1,10 +1,11 @@
-import { extractAccountId } from "../../accounts.js";
+import { AccountManager, extractAccountId } from "../../accounts.js";
 import {
 	consumeCodexResetCredit,
 	createRedeemRequestId,
 	fetchCodexResetCredits,
 	parseCodexResetCredits,
 	selectRedeemableCredit,
+	type CodexResetCredit,
 	type CodexResetConsumePayload,
 	type CodexResetCreditsPayload,
 } from "../../codex-reset.js";
@@ -22,12 +23,15 @@ import {
 } from "../../quota-readiness.js";
 import { queuedRefresh } from "../../refresh-queue.js";
 import {
+	cloneTrackedAccountStorage,
 	loadAccounts,
 	saveAccounts,
 	type AccountStorageV3,
 } from "../../storage.js";
 import type { TokenResult } from "../../types.js";
 import { resolveActiveIndex } from "../../runtime/account-status.js";
+import { createResetCreditService, resetTargetForStoredAccount } from "../../runtime/account-reset-credits.js";
+import type { ResetCreditService } from "../../runtime/reset-credits.js";
 import { hasUsableAccessToken } from "../account-credentials.js";
 
 type ResetAction = "status" | "consume";
@@ -60,6 +64,7 @@ export interface ResetCommandDeps {
 		creditId: string;
 		redeemRequestId: string;
 	}) => Promise<CodexResetConsumePayload>;
+	redeemSelectedTicket?: ResetCreditService["redeemSelectedTicket"];
 	loadQuotaCache?: () => Promise<QuotaCacheData>;
 	saveQuotaCache?: (cache: QuotaCacheData) => Promise<void>;
 	/** Restarts an already-bound runtime router after the durable limit state changes. */
@@ -168,11 +173,12 @@ function printResult(
 	const credit = payload.credit as { id?: string; expiresAt?: string | null } | null;
 	const account = payload.account as string;
 	const state = payload.redeemed === true ? "Redeemed" : payload.redeemed === null ? "Redemption outcome uncertain" : "Preview";
-	logInfo(`${state}: ${account}${credit?.id ? `; ticket=${credit.id}` : ""}${credit?.expiresAt ? `; expires=${credit.expiresAt}` : ""}`);
+	const cleanupError = payload.localCleanupError;
+	logInfo(`${state}: ${account}${credit?.id ? `; ticket=${credit.id}` : ""}${credit?.expiresAt ? `; expires=${credit.expiresAt}` : ""}${typeof cleanupError === "string" ? `; local cleanup failed: ${cleanupError}` : ""}`);
 }
 
 function clearLocalRateLimitState(storage: AccountStorageV3, index: number): AccountStorageV3 {
-	const next = structuredClone(storage);
+	const next = cloneTrackedAccountStorage(storage);
 	const account = next.accounts[index];
 	if (!account) return next;
 	delete account.rateLimitResetTimes;
@@ -243,7 +249,7 @@ export async function runResetCommand(
 			return 1;
 		}
 		accessToken = refreshed.access;
-		workingStorage = structuredClone(storage);
+		workingStorage = cloneTrackedAccountStorage(storage);
 		const refreshedAccount = workingStorage.accounts[index];
 		if (!refreshedAccount) return 1;
 		refreshedAccount.accessToken = refreshed.access;
@@ -292,24 +298,25 @@ export async function runResetCommand(
 		}
 	}
 
-	let creditsPayload: CodexResetCreditsPayload;
-	try {
-		creditsPayload = await fetchCredits(requestAccount);
-	} catch (error) {
-		logError(`Failed to fetch reset tickets: ${error instanceof Error ? error.message : String(error)}`);
-		return 1;
-	}
-	const selection = selectRedeemableCredit(parseCodexResetCredits(creditsPayload), options.creditId);
-	if (selection.type === "none-available") {
-		logError("No reset tickets are available.");
-		return 1;
-	}
-	if (selection.type === "not-found") {
-		logError(`The requested reset ticket is not available: ${selection.creditId}`);
-		return 1;
-	}
-	const credit = selection.credit;
+	let credit: CodexResetCredit | null = null;
 	if (!options.confirm || options.dryRun) {
+		let creditsPayload: CodexResetCreditsPayload;
+		try {
+			creditsPayload = await fetchCredits(requestAccount);
+		} catch (error) {
+			logError(`Failed to fetch reset tickets: ${error instanceof Error ? error.message : String(error)}`);
+			return 1;
+		}
+		const selection = selectRedeemableCredit(parseCodexResetCredits(creditsPayload), options.creditId);
+		if (selection.type === "none-available") {
+			logError("No reset tickets are available.");
+			return 1;
+		}
+		if (selection.type === "not-found") {
+			logError(`The requested reset ticket is not available: ${selection.creditId}`);
+			return 1;
+		}
+		credit = selection.credit;
 		printResult(options, logInfo, {
 			command: "reset",
 			action: "consume",
@@ -322,13 +329,95 @@ export async function runResetCommand(
 	}
 
 	try {
-		await (deps.consumeCredit ?? consumeCodexResetCredit)({
-			...requestAccount,
-			creditId: credit.id,
-			redeemRequestId: createRedeemRequestId(credit.id),
-		});
-		const nextStorage = clearLocalRateLimitState(workingStorage, index);
-		await (deps.saveAccounts ?? saveAccounts)(nextStorage);
+		const target = resetTargetForStoredAccount(selectedAccount);
+		if (!target) {
+			logError("The selected account is not an enabled subscription workspace.");
+			return 1;
+		}
+		const manager = deps.redeemSelectedTicket ? null : new AccountManager(undefined, workingStorage);
+		const service = manager ? createResetCreditService(manager) : null;
+		const redeemSelectedTicket = deps.redeemSelectedTicket ?? service?.redeemSelectedTicket.bind(service);
+		if (!redeemSelectedTicket) throw new Error("Reset-credit service is unavailable.");
+		let managerCleanupError: string | null = null;
+		let redemptionConfirmed = false;
+		try {
+			let postAccount: typeof requestAccount | null = null;
+			const result = await redeemSelectedTicket<CodexResetCredit>(
+				target,
+				async (pending) => {
+					if (pending && options.creditId) {
+						const idempotencyKey = createRedeemRequestId(options.creditId);
+						if (idempotencyKey !== pending.idempotencyKey) {
+							throw new Error("A different ticket redemption is pending; retry the same creditId.");
+						}
+						credit = { id: options.creditId, status: "unknown", isAvailable: false, resetType: null, grantedAt: null, expiresAt: null, title: null };
+						return { ticket: credit, idempotencyKey, ticketId: credit.id };
+					}
+					if (pending?.ticketId) {
+						credit = { id: pending.ticketId, status: "unknown", isAvailable: false, resetType: null, grantedAt: null, expiresAt: null, title: null };
+						return { ticket: credit, idempotencyKey: pending.idempotencyKey, ticketId: credit.id };
+					}
+					const latest = parseCodexResetCredits(await fetchCredits(requestAccount));
+					if (pending) {
+						const prior = latest.credits.find((entry) => createRedeemRequestId(entry.id) === pending.idempotencyKey);
+						if (!prior) throw new Error("The pending ticket is absent from the account list. Retry with its original creditId; no other ticket was consumed.");
+						credit = prior;
+						return { ticket: prior, idempotencyKey: pending.idempotencyKey, ticketId: prior.id };
+					}
+					const selected = selectRedeemableCredit(latest, options.creditId, deps.getNow?.() ?? Date.now());
+					if (selected.type !== "selected") throw new Error(
+						selected.type === "not-found" ? `The requested reset ticket is not available: ${selected.creditId}` : "No reset tickets are available.",
+					);
+					credit = selected.credit;
+					return { ticket: credit, idempotencyKey: createRedeemRequestId(credit.id), ticketId: credit.id };
+				},
+				async (selectedCredit, idempotencyKey) => {
+					const currentPostAccount = postAccount;
+					if (!currentPostAccount) throw new Error("Account revalidation did not complete; no ticket was consumed.");
+					const response = await (deps.consumeCredit ?? consumeCodexResetCredit)({
+						...currentPostAccount,
+						creditId: selectedCredit.id,
+						redeemRequestId: idempotencyKey,
+					});
+					if (response.code !== undefined && response.code !== "ok") {
+						throw new Error("Reset ticket provider did not confirm consumption.");
+					}
+					return "reset";
+				},
+				async () => {
+					const latestStorage = await (deps.loadAccounts ?? loadAccounts)();
+					const matchingAccounts = latestStorage?.accounts.filter((candidate) => {
+						const currentTarget = resetTargetForStoredAccount(candidate);
+						return currentTarget?.key === target.key && currentTarget.accountId === target.accountId;
+					}) ?? [];
+					const currentAccount = matchingAccounts[0];
+					if (matchingAccounts.length !== 1 || !currentAccount || typeof currentAccount.accessToken !== "string" || !hasUsableAccessToken(currentAccount, deps.getNow?.() ?? Date.now())) {
+						throw new Error("The selected account changed or its credentials expired; no ticket was consumed.");
+					}
+					postAccount = {
+						accountId: target.accountId,
+						accessToken: currentAccount.accessToken,
+						organizationId: undefined,
+					};
+				},
+			);
+			credit = result.ticket;
+			redemptionConfirmed = true;
+		} finally {
+			try {
+				await manager?.flushPendingSave();
+			} catch (error) {
+				if (!redemptionConfirmed) throw error;
+				managerCleanupError = error instanceof Error ? error.message : String(error);
+			}
+		}
+		let localCleanupError: string | null = managerCleanupError;
+		try {
+			const nextStorage = clearLocalRateLimitState(workingStorage, index);
+			await (deps.saveAccounts ?? saveAccounts)(nextStorage);
+		} catch (error) {
+			localCleanupError = error instanceof Error ? error.message : String(error);
+		}
 		let quotaCacheInvalidated = false;
 		let quotaCacheError: string | null = null;
 		let runtimeReset: "restarted" | "failed" | "unavailable" = "unavailable";
@@ -361,6 +450,7 @@ export async function runResetCommand(
 			account: identity,
 			credit,
 			redeemed: true,
+			localCleanupError,
 			quotaCacheInvalidated,
 			quotaCacheError,
 			runtimeReset,

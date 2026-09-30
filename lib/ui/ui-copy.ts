@@ -113,7 +113,7 @@ export const UI_COPY = {
 			"Enter Select | 1 Sync | 2 Backup | 3 Guard | 4 Budget | [ - Down | ] + Up | S Save | Q Back",
 		experimentalHelpPreview: "Enter Select | A Apply | Q Back",
 		experimentalHelpStatus: "Enter Select | Q Back",
-		experimentalSync: "Sync Accounts to oc-chatgpt-multi-auth",
+		experimentalSync: "Sync Accounts to oc-codex-multi-auth",
 		experimentalApplySync: "Apply Sync",
 		experimentalBackup: "Save Pool Backup",
 		experimentalBackupPrompt: "Backup file name (.json): ",
@@ -170,8 +170,8 @@ export const UI_COPY = {
 		addAnotherQuestion: (count: number) =>
 			`Add another account? (${count} added) (y/n): `,
 		selectModePrompt:
-			"(a) add, (c) check, (b) best, fi(x), (s) settings, (d) deep, (g) problem, (f) fresh, (q) back [a/c/b/x/s/d/g/f/q]: ",
-		invalidModePrompt: "Use one of: a, c, b, x, s, d, g, f, q.",
+			"(api) API models, (a) add, (c) check, (b) best, fi(x), (s) settings, (d) deep, (g) problem, (f) fresh, (q) back [api/a/c/b/x/s/d/g/f/q]: ",
+		invalidModePrompt: "Use one of: api, a, c, b, x, s, d, g, f, q.",
 	},
 } as const;
 
