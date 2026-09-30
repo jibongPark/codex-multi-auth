@@ -167,6 +167,9 @@ public struct ResetTicketSnapshot: Decodable, Equatable {
     }
 
     public func display(now: Date) -> ResetTicketDisplay {
+        if credits.isEmpty {
+            return ResetTicketDisplay(availableCount: availableCount, earliestExpiry: nil)
+        }
         let redeemable = credits.compactMap { ticket -> (ResetTicket, Date)? in
             guard ticket.isAvailable, let expiry = ticket.expiryDate, expiry > now else { return nil }
             return (ticket, expiry)
@@ -194,6 +197,6 @@ public struct ResetTicket: Decodable, Equatable {
 }
 
 public struct ResetTicketDisplay: Equatable {
-    public let availableCount: Int
+    public let availableCount: Int?
     public let earliestExpiry: Date?
 }

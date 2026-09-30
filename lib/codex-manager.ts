@@ -101,7 +101,6 @@ import { runHistoryCommand } from "./codex-manager/commands/history.js";
 import { runUnpinCommand } from "./codex-manager/commands/unpin.js";
 import { runWorkspaceCommand } from "./codex-manager/commands/workspace.js";
 import { runUsageCommand } from "./codex-manager/commands/usage.js";
-import { runResetCommand } from "./codex-manager/commands/reset.js";
 import { refreshQuotaCacheForMenu } from "./codex-manager/login-menu-data.js";
 import { printUsage } from "./codex-manager/help.js";
 import {
@@ -539,18 +538,8 @@ const CLI_COMMAND_HANDLERS: ReadonlyMap<string, CliCommandHandler> = new Map<
 			}),
 	],
 	["usage", (rest) => runUsageCommand(rest)],
-	["resets", (rest) => runResetsCommand(rest)],
-	[
-		"reset",
-		(rest) =>
-			runResetCommand(rest, {
-				restartRuntime: async () => {
-					AccountManager.resetVolatileRuntimeState();
-					const result = await restartCodexAppRuntimeRotation();
-					return result ? "restarted" : "unavailable";
-				},
-			}),
-	],
+	["resets", (rest) => runResetsCommand(rest, createResetsCommandDeps())],
+	["reset", (rest) => runResetsCommand(rest, createResetsCommandDeps())],
 	[
 		"rotation",
 		(rest) =>
@@ -720,4 +709,12 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 	console.error(`Unknown command: ${command}`);
 	printUsage();
 	return 1;
+}
+
+function createResetsCommandDeps() {
+ return { restartRuntime: async (): Promise<"restarted" | "unavailable"> => {
+  AccountManager.resetVolatileRuntimeState();
+  const result = await restartCodexAppRuntimeRotation();
+  return result ? "restarted" : "unavailable";
+ } };
 }

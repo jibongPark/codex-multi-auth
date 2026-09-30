@@ -30,7 +30,7 @@ Email dedup is case-insensitive, so the same account can't land in the pool twic
 | Forecast and pin in one step | `codex-multi-auth best` |
 | Explain the current or last selection | `codex-multi-auth why-selected` |
 | Machine-readable quota snapshot | `codex-multi-auth limits --json [--refresh]` |
-| Inspect or consume a reset ticket | `codex-reset account=2` / `codex-reset action=consume account=2 confirm=true` |
+| Inspect or consume a reset ticket | `codex-multi-auth resets list --refresh --account 2` / `codex-multi-auth resets redeem 2` |
 | Full diagnostic report | `codex-multi-auth report --live --json` |
 
 `--live` reads real quota headers. Probes lead with `gpt-5.6-sol` and fall through a model chain for accounts without entitlement; general routing defaults to `gpt-6.1-sol`.

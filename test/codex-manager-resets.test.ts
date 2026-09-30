@@ -1,8 +1,9 @@
 import { beforeEach, expect, it, vi } from 'vitest';
-const f=vi.hoisted(()=>({list:vi.fn(),redeem:vi.fn(),policy:vi.fn(),refresh:vi.fn(),capabilities:vi.fn(),extraAccounts:[] as Array<Record<string,unknown>>}));
+const f=vi.hoisted(()=>({list:vi.fn(),redeem:vi.fn(),policy:vi.fn(),refresh:vi.fn(),capabilities:vi.fn(),save:vi.fn(),legacy:vi.fn(),extraAccounts:[] as Array<Record<string,unknown>>}));
 vi.mock('../lib/runtime/account-reset-credits.js',async original=>({...await original<typeof import('../lib/runtime/account-reset-credits.js')>(),createResetCreditService:()=>({status:f.list,redeem:f.redeem,setPolicy:f.policy,refresh:f.refresh})}));
 vi.mock('../lib/runtime/model-discovery-status.js',async original=>({...await original<typeof import('../lib/runtime/model-discovery-status.js')>(),refreshAndPrintModelInventory:f.capabilities}));
-vi.mock('../lib/storage.js',async original=>({...await original<typeof import('../lib/storage.js')>(),loadAccounts:async()=>({version:3,activeIndex:0,accounts:[{accountId:'workspace',email:'reader@example.test',refreshToken:'secret',addedAt:1,lastUsed:1},...f.extraAccounts]})}));
+vi.mock('../lib/storage.js',async original=>({...await original<typeof import('../lib/storage.js')>(),saveAccounts:f.save,loadAccounts:async()=>({version:3,activeIndex:0,accounts:[{accountId:'workspace',email:'reader@example.test',refreshToken:'secret',addedAt:1,lastUsed:1},...f.extraAccounts]})}));
+vi.mock('../lib/codex-manager/commands/reset.js',()=>({runResetCommand:f.legacy}));
 import { runResetsCommand } from '../lib/codex-manager/commands/resets.js';
 beforeEach(()=>{vi.clearAllMocks();f.extraAccounts=[];vi.spyOn(console,'log').mockImplementation(()=>{});vi.spyOn(console,'error').mockImplementation(()=>{});f.list.mockResolvedValue({version:1,policy:'manual',snapshots:{}});f.redeem.mockResolvedValue('reset');f.capabilities.mockResolvedValue(true);});
 it('lists without provider reads or redemption by default',async()=>{expect(await runResetsCommand([])).toBe(0);expect(f.refresh).not.toHaveBeenCalled();expect(f.redeem).not.toHaveBeenCalled();});
@@ -115,4 +116,62 @@ it('accepts a successful read whose credit count is unavailable', async () => {
  expect(await runResetsCommand(['list','--refresh'])).toBe(0);
  expect(console.error).not.toHaveBeenCalled();
  expect(console.log).toHaveBeenCalledWith(expect.stringContaining('unknown reset credits (checked'));
+});
+
+
+it('returns provider counts as scoped JSON and refreshes only the requested account',async()=>{
+ const {resetTargetForStoredAccount}=await import('../lib/runtime/account-reset-credits.js');
+ const other={accountId:'other-workspace',refreshToken:'fixture',addedAt:1,lastUsed:1};f.extraAccounts=[other];
+ const target=resetTargetForStoredAccount(other)!;
+ f.refresh.mockResolvedValue({[target.key]:{updatedAt:Date.now(),availableCount:3}});
+ expect(await runResetsCommand(['list','--refresh','--account','2','--json'])).toBe(0);
+ const result=JSON.parse(vi.mocked(console.log).mock.calls.at(-1)![0]);
+ expect(result).toMatchObject({command:'resets',action:'list',account:2,availableCount:3,credits:[]});
+ expect(JSON.stringify(result)).not.toContain('reader@example.test');
+ expect(f.refresh).toHaveBeenCalledWith([target]);expect(f.redeem).not.toHaveBeenCalled();
+});
+it('keeps unknown cached availability null in JSON',async()=>{
+ expect(await runResetsCommand(['list','--account','1','--json'])).toBe(0);
+ expect(JSON.parse(vi.mocked(console.log).mock.calls.at(-1)![0]).availableCount).toBeNull();
+ expect(f.refresh).not.toHaveBeenCalled();
+});
+it('reports partial JSON refresh failures without recycling stale counts',async()=>{
+ const {resetTargetForStoredAccount}=await import('../lib/runtime/account-reset-credits.js');
+ const key=resetTargetForStoredAccount({accountId:'workspace',email:'reader@example.test',refreshToken:'secret',addedAt:1,lastUsed:1})!.key;
+ f.list.mockResolvedValue({policy:'manual',snapshots:{[key]:{updatedAt:1,availableCount:9}}});f.refresh.mockResolvedValue({});
+ expect(await runResetsCommand(['list','--refresh','--account','1','--json'])).toBe(1);
+ expect(JSON.parse(vi.mocked(console.log).mock.calls.at(-1)![0]).availableCount).toBeNull();
+});
+it('routes singular reset to the existing native reset command',async()=>{
+ const {runCodexMultiAuthCli}=await import('../lib/codex-manager.js');
+ expect(await runCodexMultiAuthCli(['reset','list','--account','1','--json'])).toBe(0);
+ expect(JSON.parse(vi.mocked(console.log).mock.calls.at(-1)![0]).command).toBe('resets');
+});
+it('rejects invalid account filters before any reset-credit operation',async()=>{
+ for(const args of [['list','--account','0'],['list','--account','9'],['redeem','1','--refresh'],['list','--json','--json'],['redeem','1','--account','1']])expect(await runResetsCommand(args)).toBe(1);
+ expect(f.redeem).not.toHaveBeenCalled();expect(f.refresh).not.toHaveBeenCalled();
+});
+it('does not restart or clear local state when no credit was redeemed',async()=>{
+ f.redeem.mockResolvedValue('noCredit');const restartRuntime=vi.fn();
+ expect(await runResetsCommand(['redeem','1','--json'],{restartRuntime})).toBe(0);
+ expect(JSON.parse(vi.mocked(console.log).mock.calls.at(-1)![0])).toMatchObject({outcome:'noCredit',redeemed:false});
+ expect(restartRuntime).not.toHaveBeenCalled();expect(f.save).not.toHaveBeenCalled();
+});
+it('recovers only the stored legacy ticket instead of issuing a native consume',async()=>{
+ const {resetTargetForStoredAccount}=await import('../lib/runtime/account-reset-credits.js');
+ const key=resetTargetForStoredAccount({accountId:'workspace',email:'reader@example.test',refreshToken:'secret',addedAt:1,lastUsed:1})!.key;
+ f.list.mockResolvedValue({policy:'manual',snapshots:{},pending:{key,transport:'ticket',ticketId:'old'}});f.legacy.mockResolvedValue(0);
+ expect(await runResetsCommand(['redeem','1','--json'])).toBe(0);
+ expect(f.redeem).not.toHaveBeenCalled();
+ expect(f.legacy).toHaveBeenCalledWith(expect.arrayContaining(['action=consume','account=1']),expect.objectContaining({requirePendingTicket:true}));
+});
+
+it('preserves confirmed redemption in JSON when flushing local credentials fails',async()=>{
+ const {AccountManager}=await import('../lib/accounts.js');
+ vi.spyOn(AccountManager.prototype,'flushPendingSave').mockRejectedValue(Error('private local failure'));
+ expect(await runResetsCommand(['redeem','1','--json'])).toBe(0);
+ const result=JSON.parse(vi.mocked(console.log).mock.calls.at(-1)![0]);
+ expect(result).toMatchObject({outcome:'reset',redeemed:true});
+ expect(result.localCleanupError).toBeTruthy();
+ expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain('private local failure');
 });

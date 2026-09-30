@@ -48,6 +48,8 @@ interface ResetOptions {
 }
 
 export interface ResetCommandDeps {
+	/** Recovery must never select a new ticket after another process resolved it. */
+	requirePendingTicket?: boolean;
 	loadAccounts?: () => Promise<AccountStorageV3 | null>;
 	saveAccounts?: (storage: AccountStorageV3) => Promise<void>;
 	resolveActiveIndex?: (storage: AccountStorageV3, family?: "codex") => number;
@@ -213,6 +215,7 @@ function invalidateQuotaCacheForAccount(
 	return changed ? next : null;
 }
 
+/** Private compatibility transport used only to recover a previously pending ticket. */
 export async function runResetCommand(
 	args: string[],
 	deps: ResetCommandDeps = {},
@@ -345,6 +348,7 @@ export async function runResetCommand(
 			const result = await redeemSelectedTicket<CodexResetCredit>(
 				target,
 				async (pending) => {
+					if (deps.requirePendingTicket && !pending) throw new Error("The pending ticket was already resolved; no new ticket was consumed.");
 					if (pending && options.creditId) {
 						const idempotencyKey = createRedeemRequestId(options.creditId);
 						if (idempotencyKey !== pending.idempotencyKey) {

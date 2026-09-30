@@ -69,7 +69,7 @@ export class ResetCreditService {
  }
  private async consumeLocked(state:State,target:ResetTarget,automatic=false):Promise<ResetOutcome>{
   if(state.pending&&state.pending.key!==target.key)throw Error('A reset redemption is pending for another account; retry that account explicitly first.');
-  if(state.pending?.transport==='ticket')throw Error('A ticket redemption is pending; retry the same ticket with codex-reset.');
+  if(state.pending?.transport==='ticket')throw Error('A ticket redemption is pending; retry the same account with codex-multi-auth resets redeem.');
   state.pending??={key:target.key,idempotencyKey:randomUUID(),transport:'native'};
   state.lastRedemptionAt=this.now();await this.save(state);
   const result=outcomeSchema.parse(await this.io.consume(target,state.pending.idempotencyKey));

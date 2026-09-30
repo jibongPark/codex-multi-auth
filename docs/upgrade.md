@@ -48,6 +48,24 @@ The account pool under `~/.codex/multi-auth` carries over.
 
 ## Changes To Know About
 
+### Reset Command Consolidation In This Fork
+
+The separate `codex-reset` executable and its `key=value` syntax have been
+removed. Update scripts to use the existing native `resets` command or its
+`reset` alias:
+
+```bash
+codex-multi-auth reset list --refresh --account 2 --json
+codex-multi-auth reset redeem 2 --json
+```
+
+Keep the saved account pool and `reset-credits.json` state. If an older ticket
+redemption remains uncertain, retry the same account with `resets redeem`;
+the original ticket and idempotency key are recovered before any new native
+credit is spent. The updated menu bar uses native counts and does not infer
+ticket expiry dates. Rebuild/reinstall the menu bar with the updated CLI.
+
+
 ### `codex` Is No Longer Ours (v2.1.2)
 
 The package stopped publishing a global `codex` binary — that name belongs to the official Codex install path (npm, Homebrew, or a release binary). Use `codex-multi-auth …` for account management, and `codex-multi-auth-codex`/`mcodex` when you intentionally want the forwarding wrapper. If a stale shim still answers to `codex`, reinstall the official CLI.

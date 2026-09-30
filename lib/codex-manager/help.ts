@@ -13,7 +13,7 @@ export function printUsage(): void {
 			"  codex-multi-auth status [--json]   (list is the same command)",
 			"  codex-multi-auth check [accounts|resets|capabilities] [--prime]   (default: all checks)",
 			"  codex-multi-auth limits --json [--refresh]   (structured quota windows; refresh is age-gated)",
-			"  codex-reset [action=status|consume] [account=<1-based>] [confirm=true]   (rate-limit reset tickets)",
+			"  codex-multi-auth resets list [--refresh] [--account <number>] [--json]   (reset is an alias)",
 			"",
 			"Daily use:",
 			"  codex-multi-auth list [--json]",

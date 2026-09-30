@@ -217,7 +217,7 @@ private struct AccountQuotaRow: View {
                         redeemResetTicket()
                     }
                     .controlSize(.mini)
-                    .disabled(!account.enabled || resetTickets.availableCount == 0)
+                    .disabled(!account.enabled || (resetTickets.availableCount ?? 0) <= 0)
                 }
             }
 
@@ -248,13 +248,14 @@ private struct AccountQuotaRow: View {
 }
 
 func resetTicketSummary(_ tickets: ResetTicketDisplay) -> String {
-    guard tickets.availableCount > 0 else { return "초기화권 없음" }
-    guard let expiry = tickets.earliestExpiry else { return "초기화권 \(tickets.availableCount)개" }
+    guard let count = tickets.availableCount else { return "초기화권 정보 확인 안 됨" }
+    guard count > 0 else { return "초기화권 없음" }
+    guard let expiry = tickets.earliestExpiry else { return "초기화권 \(count)개" }
     let formatter = DateFormatter()
     formatter.locale = Locale(identifier: "en_US_POSIX")
     formatter.timeZone = .current
     formatter.dateFormat = "MM-dd"
-    return "초기화권 \(tickets.availableCount)개 · \(formatter.string(from: expiry)) 만료"
+    return "초기화권 \(count)개 · \(formatter.string(from: expiry)) 만료"
 }
 
 private struct QuotaWindowRow: View {

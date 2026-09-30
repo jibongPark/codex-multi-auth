@@ -29,7 +29,7 @@ Using OpenCode rather than the Codex CLI? The sibling project [`oc-codex-multi-a
 | --- | --- |
 | `codex-multi-auth` | The account manager. Runs all 33 management subcommands locally (`login`, `status`, `switch`, `forecast`, `rotation`, `fix`, `menubar`, ...). The `auth` prefix is optional: `codex-multi-auth login` ≡ `codex-multi-auth auth login`. |
 | `codex-multi-auth-codex` | Opt-in wrapper. Handles `auth ...` locally and forwards every other command to the official Codex CLI, enabling the rotation proxy for request-bearing commands. |
-| `codex-reset` | Inspect or consume a managed account's rate-limit reset ticket with explicit confirmation. |
+| `codex-multi-auth resets` | Inspect subscription reset credits or redeem one for an explicitly selected account (`reset` is an alias). |
 | `mcodex` | Convenience launcher over the wrapper, with optional `--monitor` and `--tmux` modes. No account logic of its own. |
 | `codex-multi-auth-app-launcher` | User-level OS launcher routing helper (Windows shortcut, macOS wrapper app, Linux `.desktop`). |
 
