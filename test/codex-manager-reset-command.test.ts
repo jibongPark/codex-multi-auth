@@ -349,3 +349,10 @@ describe("reset manager command", () => {
 		expect(logInfo.mock.calls[0]?.[0]).not.toContain("private@example.com");
 	});
 });
+
+
+it("does not consume a new ticket when another process resolved the legacy pending operation", async () => {
+ const {deps} = createDeps();
+ await expect(runResetCommand(["action=consume", "account=1", "confirm=true"], {...deps, requirePendingTicket:true})).resolves.toBe(1);
+ expect(deps.consumeCredit).not.toHaveBeenCalled();
+});

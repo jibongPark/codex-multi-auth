@@ -18,15 +18,11 @@ private let validSnapshotData = Data(#"""
 
 private let validResetTicketData = Data(#"""
 {
-  "command": "reset",
-  "action": "status",
+  "command": "resets",
+  "action": "list",
+  "account": 1,
   "availableCount": 1,
-  "credits": [{
-    "id": "ticket-1",
-    "status": "available",
-    "isAvailable": true,
-    "expiresAt": "2027-01-01T00:00:00Z"
-  }]
+  "credits": []
 }
 """#.utf8)
 
@@ -272,7 +268,7 @@ func pinningAccountUsesSwitchThenRefreshes() async throws {
         ["limits", "--json"],
         ["switch", "1"],
         ["limits", "--json", "--refresh"],
-        ["reset", "account=1", "format=json"],
+        ["resets", "list", "--refresh", "--account", "1", "--json"],
     ])
 }
 
@@ -295,7 +291,7 @@ func unpinningAccountUsesUnpinThenRefreshes() async throws {
         ["limits", "--json"],
         ["unpin"],
         ["limits", "--json", "--refresh"],
-        ["reset", "account=1", "format=json"],
+        ["resets", "list", "--refresh", "--account", "1", "--json"],
     ])
 }
 
@@ -312,7 +308,7 @@ func openingDashboardUsesTheManualRefreshCommand() async {
 
     #expect(await executor.commands == [
         ["limits", "--json", "--refresh"],
-        ["reset", "account=1", "format=json"],
+        ["resets", "list", "--refresh", "--account", "1", "--json"],
     ])
 }
 
@@ -378,9 +374,10 @@ func resetTicketsUseAccountScopedCommand() async {
 
     #expect(await executor.commands == [
         ["limits", "--json"],
-        ["reset", "account=1", "format=json"],
+        ["resets", "list", "--refresh", "--account", "1", "--json"],
     ])
     #expect(model.accounts.first?.resetTickets?.availableCount == 1)
+    #expect(await executor.timeouts.last == .seconds(30))
 }
 
 @MainActor
@@ -403,7 +400,7 @@ func resetTicketsWaitForInFlightQuotaLoad() async {
 
     #expect(await executor.commands == [
         ["limits", "--json"],
-        ["reset", "account=1", "format=json"],
+        ["resets", "list", "--refresh", "--account", "1", "--json"],
     ])
     #expect(model.accounts.first?.resetTickets?.availableCount == 1)
 }
@@ -427,11 +424,12 @@ func redeemResetTicketUsesSelectedAccount() async throws {
 
     #expect(await executor.commands == [
         ["limits", "--json"],
-        ["reset", "account=1", "format=json"],
-        ["reset", "action=consume", "account=1", "confirm=true", "format=json"],
+        ["resets", "list", "--refresh", "--account", "1", "--json"],
+        ["resets", "redeem", "1", "--json"],
         ["limits", "--json", "--refresh"],
-        ["reset", "account=1", "format=json"],
+        ["resets", "list", "--refresh", "--account", "1", "--json"],
     ])
+    #expect(await executor.timeouts == [.seconds(10), .seconds(30), .seconds(60), .seconds(30), .seconds(30)])
 }
 
 @MainActor
@@ -674,4 +672,57 @@ func processExecutorForceTerminatesAfterTimeout() async {
     } catch {
         Issue.record("Expected a timeout error")
     }
+}
+
+@MainActor
+@Test("native reset outcomes do not claim a credit was redeemed", arguments: ["noCredit", "nothingToReset"])
+func nativeResetNoRedemptionOutcome(outcome: String) async throws {
+    let data = Data("{\"command\":\"resets\",\"action\":\"redeem\",\"account\":1,\"outcome\":\"\(outcome)\",\"redeemed\":false,\"runtimeReset\":\"unavailable\",\"localCleanupError\":null}".utf8)
+    let executor = RecordingExecutor(results: [
+        .success(validSnapshotData), .success(validResetTicketData), .success(data),
+        .success(validSnapshotData), .success(validResetTicketData),
+    ])
+    let model = QuotaDashboardModel(executor: executor)
+    await model.loadCached()
+    await model.loadResetTickets()
+    await model.redeemResetTicket(for: try #require(model.accounts.first))
+
+    #expect(model.resetTicketsErrorMessage == (outcome == "noCredit"
+        ? "사용할 수 있는 초기화권이 없습니다."
+        : "초기화할 사용량이 없어 초기화권을 사용하지 않았습니다."))
+}
+
+@MainActor
+@Test("confirmed native redemption surfaces local cleanup failure without exposing details")
+func nativeResetCleanupWarning() async throws {
+    let executor = RecordingExecutor(results: [
+        .success(validSnapshotData), .success(validResetTicketData),
+        .success(Data(#"{"outcome":"reset","redeemed":true,"runtimeReset":"restarted","localCleanupError":"private-path-and-token"}"#.utf8)),
+        .success(validSnapshotData), .success(validResetTicketData),
+    ])
+    let model = QuotaDashboardModel(executor: executor)
+    await model.loadCached()
+    await model.loadResetTickets()
+    await model.redeemResetTicket(for: try #require(model.accounts.first))
+
+    #expect(model.resetTicketsErrorMessage == "초기화권은 사용됐지만 로컬 사용량 상태를 갱신하지 못했습니다. 다시 새로고침해 주세요.")
+}
+
+@MainActor
+@Test("unknown native reset count prevents redemption")
+func unknownNativeResetCountPreventsRedemption() async throws {
+    let executor = RecordingExecutor(results: [
+        .success(validSnapshotData),
+        .success(Data(#"{"availableCount":null,"credits":[]}"#.utf8)),
+    ])
+    let model = QuotaDashboardModel(executor: executor)
+    await model.loadCached()
+    await model.loadResetTickets()
+    let account = try #require(model.accounts.first)
+
+    #expect(resetTicketSummary(try #require(account.resetTickets)) == "초기화권 정보 확인 안 됨")
+    model.requestResetTicketRedemption(for: account)
+    #expect(model.resetTicketConfirmationAccount == nil)
+    await model.redeemResetTicket(for: account)
+    #expect(await executor.commands.count == 2)
 }

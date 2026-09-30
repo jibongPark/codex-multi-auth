@@ -250,3 +250,22 @@ func formatsCompactResetTicketExpiry() {
 
     #expect(summary == "초기화권 3개 · 09-20 만료")
 }
+
+@Test("native count-only reset snapshots use the provider count without an invented expiry")
+func nativeResetCountOnlySnapshot() throws {
+    let snapshot = try ResetTicketSnapshot.decode(data: fixture(#"{"availableCount":4,"credits":[]}"#))
+    let display = snapshot.display(now: .now)
+
+    #expect(display.availableCount == 4)
+    #expect(display.earliestExpiry == nil)
+    #expect(resetTicketSummary(display) == "초기화권 4개")
+}
+
+@Test("unknown native reset count stays distinct from zero")
+func unknownNativeResetCount() throws {
+    let snapshot = try ResetTicketSnapshot.decode(data: fixture(#"{"availableCount":null,"credits":[]}"#))
+    let display = snapshot.display(now: .now)
+
+    #expect(resetTicketSummary(display) == "초기화권 정보 확인 안 됨")
+    #expect(display.earliestExpiry == nil)
+}

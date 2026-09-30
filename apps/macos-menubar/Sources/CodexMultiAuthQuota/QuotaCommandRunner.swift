@@ -13,7 +13,10 @@ enum QuotaCommandError: Error {
 }
 
 private struct ResetTicketRedemption: Decodable {
+    let redeemed: Bool
+    let outcome: String?
     let runtimeReset: String?
+    let localCleanupError: String?
 }
 
 private let maximumOutputBytesPerDrain = 64 * 1_024
@@ -257,8 +260,8 @@ final class QuotaDashboardModel: ObservableObject {
         for account in snapshot.accounts where account.enabled {
             do {
                 let data = try await executor.run(
-                    arguments: ["reset", "account=\(account.index + 1)", "format=json"],
-                    timeout: .seconds(10)
+                    arguments: ["resets", "list", "--refresh", "--account", "\(account.index + 1)", "--json"],
+                    timeout: .seconds(30)
                 )
                 next[account.index] = try ResetTicketSnapshot.decode(data: data).display(now: now())
             } catch is CancellationError {
@@ -287,19 +290,28 @@ final class QuotaDashboardModel: ObservableObject {
         do {
             let data = try await executor.run(
                 arguments: [
-                    "reset",
-                    "action=consume",
-                    "account=\(account.index + 1)",
-                    "confirm=true",
-                    "format=json",
+                    "resets",
+                    "redeem",
+                    "\(account.index + 1)",
+                    "--json",
                 ],
-                timeout: .seconds(30)
+                timeout: .seconds(60)
             )
             await refresh()
             let redemption = try JSONDecoder().decode(ResetTicketRedemption.self, from: data)
-            resetTicketsErrorMessage = redemption.runtimeReset == "failed" || redemption.runtimeReset == "unavailable"
-                ? "초기화권은 사용됐지만 런타임을 재시작하지 못했습니다. Codex를 다시 열어 주세요."
-                : nil
+            if redemption.redeemed {
+                if redemption.runtimeReset == "failed" || redemption.runtimeReset == "unavailable" {
+                    resetTicketsErrorMessage = "초기화권은 사용됐지만 런타임을 재시작하지 못했습니다. Codex를 다시 열어 주세요."
+                } else if redemption.localCleanupError != nil {
+                    resetTicketsErrorMessage = "초기화권은 사용됐지만 로컬 사용량 상태를 갱신하지 못했습니다. 다시 새로고침해 주세요."
+                } else {
+                    resetTicketsErrorMessage = nil
+                }
+            } else {
+                resetTicketsErrorMessage = redemption.outcome == "noCredit"
+                    ? "사용할 수 있는 초기화권이 없습니다."
+                    : "초기화할 사용량이 없어 초기화권을 사용하지 않았습니다."
+            }
         } catch {
             resetTicketsErrorMessage = "초기화권을 사용하지 못했습니다. 다시 시도해 주세요."
         }

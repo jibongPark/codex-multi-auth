@@ -14,7 +14,6 @@ The package ships five `bin` entrypoints. It does **not** publish a global
 | `codex-multi-auth` | Primary account-manager CLI: all 33 subcommands listed below |
 | `codex-multi-auth-codex` | Forwarding wrapper: `auth ...` commands run locally; every other command forwards to the official `@openai/codex` CLI with optional runtime rotation, `--account` pinning, and shadow `CODEX_HOME` handling |
 | `codex-multi-auth-app-launcher` | User-level packaged Codex app launcher routing helper (Windows shortcuts, macOS wrapper app, Linux `.desktop`) |
-| `codex-reset` | Inspect or consume a managed account's rate-limit reset ticket |
 | `mcodex` | Convenience launcher over `codex-multi-auth-codex` with optional `--monitor` and `--tmux` modes |
 
 See [public-api.md](public-api.md) for the Tier A surface and stability policy.
@@ -55,7 +54,7 @@ per-project pools are a runtime-proxy routing concern, not a CLI one.
 | `codex-multi-auth workspace <account> [workspace]` | List an account's tracked workspaces, or set its active workspace |
 | `codex-multi-auth best` | Pick the forecast-best account and switch to it; clears any manual pin. Flags: `--live`/`-l`, `--json`/`-j`, `--model`/`-m` |
 | `codex-multi-auth resets` | Earned subscription reset credits: `list [--refresh]`, `redeem <account>`, `auto manual\|last-resort` |
-| `codex-multi-auth reset` | Reset-ticket status or confirmed consumption using the `codex-reset` key=value contract |
+| `codex-multi-auth reset` | Alias for the existing `resets` command |
 
 > Sticky session affinity: `switch`, `unpin`, and `best` all bump an
 > `affinityGeneration` counter in storage. When the runtime proxy observes a
@@ -314,37 +313,23 @@ return exit code 1. Build, signing, or launch failures also return 1; inspect
 
 ---
 
-## `codex-reset`
+## Reset command migration
 
-Lists or consumes Codex rate-limit reset tickets for one managed account. It uses the same
-saved account pool as `codex-multi-auth`; it does not patch the Codex desktop app.
+The separate `codex-reset` executable has been removed. Use the existing
+`codex-multi-auth resets` command, or its `reset` alias, for subscription
+usage resets and reset-credit availability. The old `action=consume` and
+`account=...` options have been replaced by subcommands and flags:
 
 ```bash
-codex-reset
-codex-reset account=2
-codex-reset action=consume account=2 confirm=true
-codex-reset action=consume account=2 creditId=RateLimitResetCredit_1 confirm=true
-codex-reset action=consume account=2 dryRun=true format=json
+codex-multi-auth reset list --refresh --account 2 --json
+codex-multi-auth reset redeem 2 --json
 ```
 
-All inputs use `key=value`: `action=status|consume` (default `status`), `account` (optional
-1-based index; default active account), `creditId`, `confirm=true|false`,
-`dryRun=true|false`, `format=text|json`, and `includeSensitive=true|false`.
-
-`consume` is preview-only until `confirm=true`; `dryRun=true` is always preview-only. Without
-`creditId`, the command selects the available ticket with the **earliest valid expiry**. Equal
-expiry times are ordered by ticket ID; expired, missing, or unreadable expiries are not eligible.
-A confirmed successful redemption clears only
-that account's locally stored rate-limit/cooldown state; restart a running runtime proxy or the
-Codex app if it has already retained old state in memory.
-
-Confirmed ticket redemptions share the durable redemption lock and cooldown used
-by `codex-multi-auth resets`. If the result is uncertain, retry the same
-account; the pending ticket ID and idempotency key are retained in the local
-`0600` reset-credit state file until resolved. Until then, the other reset
-command will not spend another credit. Preview and status reads do not consume
-credits or write redemption state. If local cleanup fails after a confirmed
-redemption, the result remains `redeemed: true` and includes a cleanup error.
+New redemptions use the native Codex backend. An unresolved ticket redemption
+from an older version retains its original ticket ID and idempotency key:
+`resets redeem <account-number>` recovers that exact pending operation before
+any new native credit can be spent. Other accounts remain blocked while the
+result is uncertain. A concurrent recovery cannot select a new ticket.
 
 > Sticky session affinity: `switch`, `unpin`, and `best` all bump an
 > `affinityGeneration` counter in storage that the runtime rotation proxy
@@ -473,10 +458,25 @@ requests, and explicit strict invocation pins bypass the whole order.
 Earned subscription reset credits — separate from paid API credits:
 
 ```bash
-codex-multi-auth resets list [--refresh]
-codex-multi-auth resets redeem <account-number>
+codex-multi-auth resets list [--refresh] [--account <number>] [--json]
+codex-multi-auth resets redeem <account-number> [--json]
 codex-multi-auth resets auto manual|last-resort      # default: manual
 ```
+
+`reset` is an alias for `resets`. `list` is cache-only unless `--refresh` is
+specified; `--account` selects a 1-based account number. `--json` emits a
+machine-readable result without progress text or account emails. A scoped
+list returns `availableCount` (a number or `null` when unknown), `credits: []`,
+and observation time; an unscoped list returns an `accounts` array. Native
+reads provide counts, so ticket expiry dates are not inferred. The menu bar
+uses these counts and keeps unknown availability separate from zero.
+
+`redeem` reports the backend outcome (`reset`, `alreadyRedeemed`,
+`nothingToReset`, or `noCredit`). Only confirmed redemption triggers local
+quota synchronization and a bound runtime restart. The JSON result preserves
+`redeemed: true` even if local cleanup or the restart fails, with a cleanup
+warning and `runtimeReset` status. Do not spend another credit merely to
+repair local runtime state.
 
 `status` includes cached counts and observation age; `check` refreshes them.
 Unknown availability is not zero. Organization display aliases stay separate
@@ -489,8 +489,8 @@ reserves, a scheduled reset that recovered or is due within a minute, unknown
 usage, API/ZDR routes, and explicit single-account invocation pins all prevent
 automatic redemption; network failures never authorize one. An ambiguous
 redemption stays pending under the same idempotency key — retry the same
-account explicitly. Concurrent redemptions are serialized with a five-minute
-minimum interval.
+account explicitly. Concurrent redemptions are serialized; explicit attempts have a ten-second
+cooldown, and automatic recovery waits at least five minutes after redemption.
 
 `check resets` and `resets list --refresh` report how many eligible accounts
 could not be read and exit 1 on a partial or complete refresh failure. A
